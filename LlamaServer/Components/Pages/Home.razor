@@ -1,0 +1,214 @@
+@page "/"
+@rendermode @(new InteractiveServerRenderMode())
+@using LlamaServer.Models
+@inject HttpClient Http
+
+<main class="shell">
+    <aside class="conversation-panel">
+        <div class="panel-header">
+            <h2>Conversas</h2>
+            <button type="button" @onclick="NewConversation">Nova</button>
+        </div>
+
+        @if (_conversations.Count == 0)
+        {
+            <p class="muted">Ainda nao ha conversas guardadas.</p>
+        }
+
+        <div class="conversation-list">
+            @foreach (var conversation in _conversations)
+            {
+                <button type="button"
+                        class="conversation-item @(conversation.Id == _conversationId ? "active" : "")"
+                        @onclick="() => OpenConversationAsync(conversation.Id)">
+                    <span>@conversation.Title</span>
+                    <small>@conversation.UpdatedAt.ToLocalTime().ToString("dd/MM HH:mm")</small>
+                </button>
+            }
+        </div>
+    </aside>
+
+    <section class="chat-panel">
+        <header class="hero">
+            <div>
+                <h1>Llama Server</h1>
+                <p>Gestor local ligado ao llama.cpp server</p>
+            </div>
+            <div class="engine-status @(_engine?.IsRunning == true ? "online" : "offline")">
+                <span></span>
+                @(_engine?.IsRunning == true ? "Motor ligado" : "Motor desligado")
+            </div>
+        </header>
+
+        <div class="messages">
+            @if (_messages.Count == 0)
+            {
+                <p class="empty">Escolhe uma conversa antiga ou comeca uma nova mensagem.</p>
+            }
+
+            @foreach (var message in _messages)
+            {
+                <article class="message @message.Role">
+                    <strong>@(message.Role == "user" ? "Tu" : "Assistente")</strong>
+                    <p>@message.Content</p>
+                </article>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <p class="error">@_error</p>
+        }
+
+        <EditForm Model="_form" OnValidSubmit="SendAsync" class="composer">
+            <InputTextArea @bind-Value="_form.Message" placeholder="Escreve o prompt..." />
+            <button type="submit" disabled="@_sending">Enviar</button>
+        </EditForm>
+    </section>
+
+    <aside class="side-panel">
+        <section>
+            <div class="panel-header">
+                <h2>Motor</h2>
+                <button type="button" @onclick="LoadEngineStatusAsync">Testar</button>
+            </div>
+            <p class="muted">@(_engine?.EngineUrl ?? "http://127.0.0.1:8080")</p>
+            @if (!string.IsNullOrWhiteSpace(_engine?.CurrentModel))
+            {
+                <p class="muted">Modelo no motor: @_engine.CurrentModel</p>
+            }
+            @if (_engine is { IsRunning: false } && !string.IsNullOrWhiteSpace(_engine.Error))
+            {
+                <p class="error small">@_engine.Error</p>
+            }
+        </section>
+
+        <section>
+            <div class="panel-header">
+                <h2>Modelos</h2>
+                <button type="button" @onclick="LoadModelsAsync">Atualizar</button>
+            </div>
+
+            @if (_models.Count == 0)
+            {
+                <p class="muted">Sem modelos .gguf encontrados na pasta configurada.</p>
+            }
+
+            @foreach (var model in _models)
+            {
+                <div class="model-row">
+                    <span>@model.Name</span>
+                    <button type="button" @onclick="() => MarkModelAsync(model.Name)">
+                        @(model.IsActive ? "Ativo" : "Usar")
+                    </button>
+                </div>
+            }
+        </section>
+    </aside>
+</main>
+
+@code {
+    private readonly ChatForm _form = new();
+    private readonly List<LocalMessage> _messages = [];
+    private List<ConversationSummary> _conversations = [];
+    private List<ModelInfo> _models = [];
+    private EngineStatus? _engine;
+    private Guid? _conversationId;
+    private bool _sending;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadEngineStatusAsync();
+        await LoadConversationsAsync();
+        await LoadModelsAsync();
+    }
+
+    private async Task SendAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_form.Message))
+        {
+            return;
+        }
+
+        _sending = true;
+        _error = null;
+        var prompt = _form.Message.Trim();
+        _form.Message = "";
+        _messages.Add(new LocalMessage("user", prompt));
+
+        try
+        {
+            var response = await Http.PostAsJsonAsync("/api/chat", new ChatRequest(prompt, _conversationId));
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = $"Erro no chat: HTTP {(int)response.StatusCode}. Confirma se o llama.cpp server esta ligado.";
+                return;
+            }
+
+            var chat = await response.Content.ReadFromJsonAsync<ChatResponse>();
+
+            if (chat is not null)
+            {
+                _conversationId = chat.ConversationId;
+                _messages.Add(new LocalMessage("assistant", chat.Message));
+                await LoadConversationsAsync();
+                await LoadEngineStatusAsync();
+            }
+        }
+        finally
+        {
+            _sending = false;
+        }
+    }
+
+    private void NewConversation()
+    {
+        _conversationId = null;
+        _messages.Clear();
+        _error = null;
+    }
+
+    private async Task OpenConversationAsync(Guid id)
+    {
+        var conversation = await Http.GetFromJsonAsync<ConversationDetail>($"/api/conversations/{id}");
+        if (conversation is null)
+        {
+            return;
+        }
+
+        _conversationId = conversation.Id;
+        _messages.Clear();
+        _messages.AddRange(conversation.Messages.Select(message => new LocalMessage(message.Role, message.Content)));
+        _error = null;
+    }
+
+    private async Task LoadConversationsAsync()
+    {
+        _conversations = await Http.GetFromJsonAsync<List<ConversationSummary>>("/api/conversations") ?? [];
+    }
+
+    private async Task LoadEngineStatusAsync()
+    {
+        _engine = await Http.GetFromJsonAsync<EngineStatus>("/api/engine/status");
+    }
+
+    private async Task LoadModelsAsync()
+    {
+        _models = await Http.GetFromJsonAsync<List<ModelInfo>>("/api/models") ?? [];
+    }
+
+    private async Task MarkModelAsync(string model)
+    {
+        var response = await Http.PostAsJsonAsync("/api/models/load", new LoadModelRequest(model));
+        response.EnsureSuccessStatusCode();
+        await LoadModelsAsync();
+    }
+
+    private sealed class ChatForm
+    {
+        public string Message { get; set; } = "";
+    }
+
+    private sealed record LocalMessage(string Role, string Content);
+}

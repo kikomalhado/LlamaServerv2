@@ -1,0 +1,14 @@
+@LlamaServer_HostAddress = http://localhost:5130
+
+GET {{LlamaServer_HostAddress}}/api/engine/status
+Accept: application/json
+
+###
+
+GET {{LlamaServer_HostAddress}}/api/conversations
+Accept: application/json
+
+###
+
+GET {{LlamaServer_HostAddress}}/api/models
+Accept: application/json
