@@ -1,19 +1,26 @@
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using Microsoft.Extensions.Options;
 using LlamaServer.Models;
 
 namespace LlamaServer.Services;
 
-public sealed class LlamaCppClient(HttpClient httpClient, IOptions<LlamaServerOptions> options)
+public sealed class LlamaCppClient(
+    HttpClient httpClient,
+    SettingsManager settings,
+    LlamaSharpClient llamaSharp)
 {
-    private readonly LlamaServerOptions _options = options.Value;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken)
     {
-        var engineUrl = _options.EngineUrl.TrimEnd('/');
+        var serverSettings = await settings.GetAsync(cancellationToken);
+        if (serverSettings.Engine == "llamasharp")
+        {
+            return await llamaSharp.GetStatusAsync(cancellationToken);
+        }
+
+        var engineUrl = serverSettings.EngineUrl.TrimEnd('/');
 
         try
         {
@@ -35,8 +42,15 @@ public sealed class LlamaCppClient(HttpClient httpClient, IOptions<LlamaServerOp
         IReadOnlyList<LlamaChatMessage> messages,
         CancellationToken cancellationToken)
     {
+        var serverSettings = await settings.GetAsync(cancellationToken);
+        if (serverSettings.Engine == "llamasharp")
+        {
+            return await llamaSharp.CompleteChatAsync(messages, cancellationToken);
+        }
+
+        var engineUrl = serverSettings.EngineUrl.TrimEnd('/');
         var response = await httpClient.PostAsJsonAsync(
-            $"{_options.EngineUrl.TrimEnd('/')}/v1/chat/completions",
+            $"{engineUrl}/v1/chat/completions",
             new
             {
                 model = await GetCurrentModelAsync(cancellationToken),
@@ -64,9 +78,21 @@ public sealed class LlamaCppClient(HttpClient httpClient, IOptions<LlamaServerOp
         IReadOnlyList<LlamaChatMessage> messages,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var serverSettings = await settings.GetAsync(cancellationToken);
+        if (serverSettings.Engine == "llamasharp")
+        {
+            await foreach (var token in llamaSharp.StreamChatAsync(messages, cancellationToken))
+            {
+                yield return token;
+            }
+
+            yield break;
+        }
+
+        var engineUrl = serverSettings.EngineUrl.TrimEnd('/');
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            $"{_options.EngineUrl.TrimEnd('/')}/v1/chat/completions");
+            $"{engineUrl}/v1/chat/completions");
 
         request.Content = JsonContent.Create(
             new
@@ -121,7 +147,8 @@ public sealed class LlamaCppClient(HttpClient httpClient, IOptions<LlamaServerOp
 
     private async Task<string?> GetCurrentModelAsync(CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync($"{_options.EngineUrl.TrimEnd('/')}/v1/models", cancellationToken);
+        var engineUrl = (await settings.GetAsync(cancellationToken)).EngineUrl.TrimEnd('/');
+        using var response = await httpClient.GetAsync($"{engineUrl}/v1/models", cancellationToken);
         response.EnsureSuccessStatusCode();
 
         using var document = await JsonDocument.ParseAsync(

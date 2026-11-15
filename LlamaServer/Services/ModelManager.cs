@@ -7,16 +7,15 @@ namespace LlamaServer.Services;
 
 public sealed class ModelManager(
     AppDbContext db,
-    IOptions<LlamaServerOptions> options,
+    SettingsManager settings,
     IWebHostEnvironment environment)
 {
     private const string ActiveModelKey = "ActiveModel";
-    private readonly LlamaServerOptions _options = options.Value;
 
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
     {
         var active = await GetActiveModelAsync(cancellationToken);
-        var directory = EnsureModelDirectory();
+        var directory = await EnsureModelDirectoryAsync(cancellationToken);
 
         return Directory
             .EnumerateFiles(directory, "*.gguf", SearchOption.TopDirectoryOnly)
@@ -31,7 +30,7 @@ public sealed class ModelManager(
 
     public async Task<LoadModelResponse?> LoadModelAsync(string model, CancellationToken cancellationToken)
     {
-        var directory = EnsureModelDirectory();
+        var directory = await EnsureModelDirectoryAsync(cancellationToken);
         var fileName = Path.GetFileName(model.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
             ? model
             : $"{model}.gguf");
@@ -52,11 +51,12 @@ public sealed class ModelManager(
         setting.Value = fileName;
         await db.SaveChangesAsync(cancellationToken);
 
+        var serverSettings = await settings.GetAsync(cancellationToken);
         return new LoadModelResponse(
             fileName,
             path,
-            _options.EngineUrl,
-            "Modelo ativo guardado no gestor. Se o llama.cpp server ja estiver a correr com outro modelo, reinicia o motor apontando para este ficheiro.");
+            serverSettings.EngineUrl,
+            "Modelo ativo guardado no gestor. Reinicia o llama.cpp server se o motor estiver a correr com outro modelo.");
     }
 
     private async Task<string?> GetActiveModelAsync(CancellationToken cancellationToken) =>
@@ -65,11 +65,12 @@ public sealed class ModelManager(
             .Select(setting => setting.Value)
             .FirstOrDefaultAsync(cancellationToken);
 
-    private string EnsureModelDirectory()
+    private async Task<string> EnsureModelDirectoryAsync(CancellationToken cancellationToken)
     {
-        var directory = Path.IsPathRooted(_options.ModelDirectory)
-            ? _options.ModelDirectory
-            : Path.Combine(environment.ContentRootPath, _options.ModelDirectory);
+        var serverSettings = await settings.GetAsync(cancellationToken);
+        var directory = Path.IsPathRooted(serverSettings.ModelDirectory)
+            ? serverSettings.ModelDirectory
+            : Path.Combine(environment.ContentRootPath, serverSettings.ModelDirectory);
 
         directory = Path.GetFullPath(directory);
         Directory.CreateDirectory(directory);

@@ -1,0 +1,48 @@
+@page "/signup"
+@attribute [AllowAnonymous]
+
+<main class="auth-shell">
+    <section class="auth-card">
+        <h1>Criar conta</h1>
+        <p class="muted">Cada utilizador tem chats e credenciais proprias.</p>
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <p class="error">@_error</p>
+        }
+
+        <form method="post" action="/auth/signup" class="auth-form">
+            <AntiforgeryToken />
+            <label>
+                Nome de utilizador
+                <input name="username" required minlength="3" autocomplete="username" />
+            </label>
+
+            <label>
+                Nome
+                <input name="displayName" required minlength="2" autocomplete="name" />
+            </label>
+
+            <label>
+                Password
+                <input type="password" name="password" required minlength="6" autocomplete="new-password" />
+            </label>
+
+            <button type="submit">Criar conta</button>
+        </form>
+
+        <p class="muted auth-switch">Ja tens conta? <a href="/login" class="auth-link">Entrar</a></p>
+    </section>
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    private string? ErrorQuery { get; set; }
+
+    private string? _error;
+
+    protected override void OnParametersSet()
+    {
+        _error = ErrorQuery;
+    }
+}

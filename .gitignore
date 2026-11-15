@@ -1,0 +1,19 @@
+### Example user template template
+### Example user template
+
+# IntelliJ project files
+.idea
+*.iml
+out
+gen
+
+# .NET build output
+**/bin/
+**/obj/
+**/*.gguf
+**/.DS_Store
+
+
+
+
+LlamaServer/bin/

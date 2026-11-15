@@ -1,5 +1,17 @@
-<Router AppAssembly="typeof(Program).Assembly">
-    <Found Context="routeData">
-        <RouteView RouteData="routeData" />
-    </Found>
-</Router>
+<CascadingAuthenticationState>
+    <Router AppAssembly="typeof(Program).Assembly">
+        <Found Context="routeData">
+            <AuthorizeRouteView RouteData="routeData">
+                <NotAuthorized>
+                    <main class="auth-shell">
+                        <section class="auth-card">
+                            <h1>Autenticacao necessaria</h1>
+                            <p class="muted">Faz login para continuar.</p>
+                            <a href="/login" class="auth-link">Ir para login</a>
+                        </section>
+                    </main>
+                </NotAuthorized>
+            </AuthorizeRouteView>
+        </Found>
+    </Router>
+</CascadingAuthenticationState>

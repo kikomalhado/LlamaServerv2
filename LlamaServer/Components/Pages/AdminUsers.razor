@@ -1,0 +1,165 @@
+@page "/admin/users"
+@attribute [Authorize(Roles = UserRole.Admin)]
+@rendermode @(new InteractiveServerRenderMode())
+@inject HttpClient Http
+
+<main class="auth-shell">
+    <section class="auth-card admin-card">
+        <h1>Gestao de utilizadores</h1>
+        <p class="muted">Admins podem atualizar nome, role e password de cada conta.</p>
+
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <p class="muted">@_message</p>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <p class="error">@_error</p>
+        }
+
+        @if (_users.Count == 0)
+        {
+            <p class="muted">Sem utilizadores para mostrar.</p>
+        }
+        else
+        {
+            <div class="users-grid">
+                @foreach (var user in _users)
+                {
+                    <EditForm Model="user" OnValidSubmit="() => SaveUserAsync(user)" class="user-row">
+                        <div>
+                            <strong>@user.Username</strong>
+                            <p class="muted">ID: @user.Id</p>
+                        </div>
+
+                        <label>
+                            Nome
+                            <InputText @bind-Value="user.DisplayName" />
+                        </label>
+
+                        <label>
+                            Role
+                            <InputSelect @bind-Value="user.Role">
+                                <option value="user">user</option>
+                                <option value="admin">admin</option>
+                            </InputSelect>
+                        </label>
+
+                        <label>
+                            Nova password (opcional)
+                            <InputText type="password" @bind-Value="user.NewPassword" />
+                        </label>
+
+                        <div class="user-actions">
+                            <button type="submit" disabled="@_saving">Guardar</button>
+                            <button type="button" class="secondary" disabled="@_saving" @onclick="() => DeleteUserAsync(user)">Apagar</button>
+                        </div>
+                    </EditForm>
+                }
+            </div>
+        }
+
+        <p class="auth-switch"><a href="/" class="auth-link">Voltar ao chat</a></p>
+    </section>
+</main>
+
+@code {
+    private readonly List<UserEditor> _users = [];
+    private bool _saving;
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadUsersAsync();
+    }
+
+    private async Task LoadUsersAsync()
+    {
+        _users.Clear();
+        _error = null;
+        var response = await Http.GetAsync("/api/admin/users");
+        if (!response.IsSuccessStatusCode)
+        {
+            _error = "Nao foi possivel carregar os utilizadores.";
+            return;
+        }
+
+        var users = await response.Content.ReadFromJsonAsync<List<AdminUserDto>>() ?? [];
+        foreach (var user in users)
+        {
+            _users.Add(new UserEditor
+            {
+                Id = user.Id,
+                Username = user.Username,
+                DisplayName = user.DisplayName,
+                Role = user.Role
+            });
+        }
+    }
+
+    private async Task SaveUserAsync(UserEditor user)
+    {
+        _saving = true;
+        _message = null;
+        _error = null;
+
+        try
+        {
+            var response = await Http.PutAsJsonAsync(
+                $"/api/admin/users/{user.Id}",
+                new AdminUpdateUserRequest(user.DisplayName, user.Role, string.IsNullOrWhiteSpace(user.NewPassword) ? null : user.NewPassword));
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+                _error = error?.Error ?? "Nao foi possivel guardar o utilizador.";
+                return;
+            }
+
+            user.NewPassword = "";
+            _message = $"Utilizador {user.Username} atualizado.";
+            await LoadUsersAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task DeleteUserAsync(UserEditor user)
+    {
+        _saving = true;
+        _message = null;
+        _error = null;
+
+        try
+        {
+            var response = await Http.DeleteAsync($"/api/admin/users/{user.Id}");
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+                _error = error?.Error ?? "Nao foi possivel apagar o utilizador.";
+                return;
+            }
+
+            _message = $"Utilizador {user.Username} apagado.";
+            await LoadUsersAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private sealed class UserEditor
+    {
+        public Guid Id { get; set; }
+        public string Username { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string Role { get; set; } = UserRole.User;
+        public string NewPassword { get; set; } = "";
+    }
+}
+

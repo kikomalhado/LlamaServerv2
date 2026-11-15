@@ -1,127 +1,227 @@
 @page "/"
+@attribute [Authorize]
 @rendermode @(new InteractiveServerRenderMode())
 @using LlamaServer.Models
+@using System.Text
 @inject HttpClient Http
+@inject NavigationManager Navigation
 
-<main class="shell">
-    <aside class="conversation-panel">
-        <div class="panel-header">
-            <h2>Conversas</h2>
-            <button type="button" @onclick="NewConversation">Nova</button>
+<main class="chat-workspace">
+    <div class="ambient-glow ambient-glow-top" aria-hidden="true"></div>
+    <div class="ambient-glow ambient-glow-bottom" aria-hidden="true"></div>
+    <aside class="workspace-sidebar">
+        <div class="workspace-brand">
+            <div class="brand-mark">🦙</div>
+            <div>
+                <strong>Llama Server</strong>
+                <span>Local AI workspace</span>
+            </div>
+        </div>
+        <button type="button" class="new-chat-button" @onclick="NewConversation">
+            <span class="button-symbol">+</span>
+            <span>Nova conversa</span>
+            <kbd>⌘ K</kbd>
+        </button>
+
+        <label class="conversation-search">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" placeholder="Pesquisar conversas..." aria-label="Pesquisar conversas" />
+        </label>
+
+     
+
+        <nav class="workspace-nav" aria-label="Navegação principal">
+            <span class="workspace-nav-label">Workspace</span>
+            <a class="workspace-nav-item" href="/models">
+                <span>◈</span> Modelos
+            </a>
+            @if (_isAdmin)
+            {
+                <a class="workspace-nav-item" href="/settings">
+                    <span>⚙</span> Definições
+                </a>
+            }
+        </nav>
+
+        <div class="conversation-history">
+            <div class="history-heading"><span>Histórico</span><span class="history-count">@_conversations.Count</span></div>
+            <div class="conversation-list">
+                @if (_conversations.Count == 0)
+                {
+                    <p class="history-empty">Ainda sem conversas.</p>
+                }
+                else
+                {
+                    @foreach (var conversation in _conversations)
+                    {
+                        var isActive = conversation.Id == _conversationId;
+                        var activeClass = isActive ? "active" : "";
+                        <div class="conversation-item @activeClass">
+                            @if (_renamingConversationId == conversation.Id)
+                            {
+                                <div class="rename-row">
+                                    <input @bind="_renameTitle" aria-label="Novo título" />
+                                    <button type="button" class="conversation-action save" title="Guardar" @onclick="SaveRenameAsync">✓</button>
+                                    <button type="button" class="conversation-action" title="Cancelar" @onclick="CancelRename">×</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <button type="button" class="conversation-open" @onclick="() => OpenConversationAsync(conversation.Id)">
+                                    <span class="conversation-glyph">◌</span>
+                                    <span class="conversation-copy">
+                                        <strong>@conversation.Title</strong>
+                                        <small>@conversation.UpdatedAt.ToLocalTime().ToString("dd/MM HH:mm")</small>
+                                    </span>
+                                </button>
+                                <div class="conversation-actions">
+                                    <button type="button" class="conversation-action" title="Renomear" @onclick="() => BeginRename(conversation)">✎</button>
+                                    <button type="button" class="conversation-action danger" title="Apagar" @onclick="() => DeleteConversationAsync(conversation.Id)">⌫</button>
+                                </div>
+                            }
+                        </div>
+                    }
+                }
+            </div>
         </div>
 
-        @if (_conversations.Count == 0)
-        {
-            <p class="muted">Ainda nao ha conversas guardadas.</p>
-        }
-
-        <div class="conversation-list">
-            @foreach (var conversation in _conversations)
-            {
-                <button type="button"
-                        class="conversation-item @(conversation.Id == _conversationId ? "active" : "")"
-                        @onclick="() => OpenConversationAsync(conversation.Id)">
-                    <span>@conversation.Title</span>
-                    <small>@conversation.UpdatedAt.ToLocalTime().ToString("dd/MM HH:mm")</small>
-                </button>
-            }
+        <div class="workspace-footer">
+            <div class="profile-pill">
+                <div class="user-avatar">@GetAvatarLetter()</div>
+                <span><strong>@(_currentUser?.DisplayName ?? "Utilizador")</strong><small>@(_isAdmin ? "Admin" : "User")</small></span>
+            </div>
+            <div class="footer-links">
+                <a href="/account">Conta</a>
+                @if (_isAdmin)
+                {
+                    <a href="/admin/users">Gestão</a>
+                }
+                <form method="post" action="/auth/logout">
+                    <AntiforgeryToken />
+                    <button type="submit" class="logout-link">Sair</button>
+                </form>
+            </div>
         </div>
     </aside>
 
-    <section class="chat-panel">
-        <header class="hero">
-            <div>
-                <h1>Llama Server</h1>
-                <p>Gestor local ligado ao llama.cpp server</p>
+    <section class="chat-workspace-main">
+        <header class="workspace-topbar">
+            <button type="button" class="mobile-menu-button" aria-label="Abrir menu">☰</button>
+            <div class="topbar-title">
+                <span class="topbar-eyebrow">CONVERSA LOCAL</span>
+                <div class="topbar-model">
+                <span class="topbar-model-dot"></span>
+                <span>@(_engine?.CurrentModel ?? "Modelo local")</span>
+                <small>@(_engine?.IsRunning == true ? "Online" : "Offline")</small>
+              
+                </div>
             </div>
-            <div class="engine-status @(_engine?.IsRunning == true ? "online" : "offline")">
-                <span></span>
-                @(_engine?.IsRunning == true ? "Motor ligado" : "Motor desligado")
-            </div>
+           
         </header>
 
-        <div class="messages">
-            @if (_messages.Count == 0)
-            {
-                <p class="empty">Escolhe uma conversa antiga ou comeca uma nova mensagem.</p>
-            }
-
-            @foreach (var message in _messages)
-            {
-                <article class="message @message.Role">
-                    <strong>@(message.Role == "user" ? "Tu" : "Assistente")</strong>
-                    <p>@message.Content</p>
-                </article>
-            }
-        </div>
-
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <p class="error">@_error</p>
-        }
-
-        <EditForm Model="_form" OnValidSubmit="SendAsync" class="composer">
-            <InputTextArea @bind-Value="_form.Message" placeholder="Escreve o prompt..." />
-            <button type="submit" disabled="@_sending">Enviar</button>
-        </EditForm>
-    </section>
-
-    <aside class="side-panel">
-        <section>
-            <div class="panel-header">
-                <h2>Motor</h2>
-                <button type="button" @onclick="LoadEngineStatusAsync">Testar</button>
-            </div>
-            <p class="muted">@(_engine?.EngineUrl ?? "http://127.0.0.1:8080")</p>
-            @if (!string.IsNullOrWhiteSpace(_engine?.CurrentModel))
-            {
-                <p class="muted">Modelo no motor: @_engine.CurrentModel</p>
-            }
-            @if (_engine is { IsRunning: false } && !string.IsNullOrWhiteSpace(_engine.Error))
-            {
-                <p class="error small">@_engine.Error</p>
-            }
-        </section>
-
-        <section>
-            <div class="panel-header">
-                <h2>Modelos</h2>
-                <button type="button" @onclick="LoadModelsAsync">Atualizar</button>
+        <div class="chat-canvas">
+            <div class="messages">
+                @if (_messages.Count == 0)
+                {
+                    <div class="empty-state">
+                        <div class="empty-state-icon">✦</div>
+                        <p class="empty-kicker">LLAMA SERVER · WORKSPACE LOCAL</p>
+                        <h2 class="empty-state-title">Como posso ajudar o teu projeto?</h2>
+                        <p class="empty-state-text">Escolhe uma sugestão ou escreve uma mensagem para o teu modelo.</p>
+                        <div class="suggestion-grid">
+                            <button type="button" class="suggestion-card" @onclick="OnResumirClick">
+                                <span class="suggestion-icon cyan">▤</span><span><strong>Resumir texto</strong><small>Extrai as ideias principais de um texto.</small></span>
+                            </button>
+                            <button type="button" class="suggestion-card" @onclick="OnExplicarClick">
+                                <span class="suggestion-icon emerald">◇</span><span><strong>Explicar conceito</strong><small>Torna um tema técnico mais simples.</small></span>
+                            </button>
+                            <button type="button" class="suggestion-card" @onclick="OnAnalisarClick">
+                                <span class="suggestion-icon cyan">▧</span><span><strong>Analisar documento</strong><small>Encontra pontos importantes no conteúdo.</small></span>
+                            </button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var message in _messages)
+                    {
+                        <div class="message @message.Role">
+                            @if (message.Role != "user")
+                            {
+                                <div class="message-avatar">✦</div>
+                            }
+                            <div class="message-content">
+                                <div class="message-role">
+                                    @(message.Role == "user" ? "Tu" : "Assistente")
+                                </div>
+                                <p>@message.Content</p>
+                            </div>
+                        </div>
+                    }
+                }
             </div>
 
-            @if (_models.Count == 0)
+            @if (!string.IsNullOrWhiteSpace(_error))
             {
-                <p class="muted">Sem modelos .gguf encontrados na pasta configurada.</p>
+                <p class="error">@_error</p>
             }
 
-            @foreach (var model in _models)
-            {
-                <div class="model-row">
-                    <span>@model.Name</span>
-                    <button type="button" @onclick="() => MarkModelAsync(model.Name)">
-                        @(model.IsActive ? "Ativo" : "Usar")
-                    </button>
+            <EditForm Model="_form" OnValidSubmit="SendAsync" class="composer">
+                <div class="composer-deck">
+                    <InputTextArea @bind-Value="_form.Message" placeholder="Escreve a tua mensagem..." />
+                    <div class="composer-toolbar">
+                        
+                        <span class="composer-hint">Shift + Enter para nova linha</span>
+                        <button type="submit" class="send-button" disabled="@_sending" aria-label="Enviar mensagem">
+                            @if (_sending)
+                            {
+                                <span>⏳</span>
+                            }
+                            else
+                            {
+                                <span>↑</span>
+                            }
+                        </button>
+                    </div>
                 </div>
-            }
-        </section>
-    </aside>
+            </EditForm>
+            <div
+                class="composer-footer"><span>Os modelos podem cometer erros. Verifica informações importantes.</span>
+                </div>
+        </div>
+    </section>
 </main>
 
 @code {
     private readonly ChatForm _form = new();
     private readonly List<LocalMessage> _messages = [];
     private List<ConversationSummary> _conversations = [];
-    private List<ModelInfo> _models = [];
     private EngineStatus? _engine;
     private Guid? _conversationId;
     private bool _sending;
     private string? _error;
+    private AuthUserDto? _currentUser;
+    private bool _isAdmin;
+    private Guid? _renamingConversationId;
+    private string _renameTitle = "";
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadCurrentUserAsync();
         await LoadEngineStatusAsync();
         await LoadConversationsAsync();
-        await LoadModelsAsync();
+    }
+
+    private async Task LoadCurrentUserAsync()
+    {
+        _currentUser = await Http.GetFromJsonAsync<AuthUserDto>("/api/auth/me");
+        if (_currentUser is null)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        _isAdmin = string.Equals(_currentUser.Role, UserRole.Admin, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task SendAsync()
@@ -139,22 +239,79 @@
 
         try
         {
-            var response = await Http.PostAsJsonAsync("/api/chat", new ChatRequest(prompt, _conversationId));
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/chat/stream")
+            {
+                Content = JsonContent.Create(new ChatRequest(prompt, _conversationId))
+            };
+            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             if (!response.IsSuccessStatusCode)
             {
                 _error = $"Erro no chat: HTTP {(int)response.StatusCode}. Confirma se o llama.cpp server esta ligado.";
                 return;
             }
 
-            var chat = await response.Content.ReadFromJsonAsync<ChatResponse>();
+            using var stream = await response.Content.ReadAsStreamAsync();
+            using var reader = new StreamReader(stream);
+            var answer = new StringBuilder();
+            var assistantIndex = _messages.Count;
+            _messages.Add(new LocalMessage("assistant", ""));
+            string? conversationId = null;
+            var eventData = new List<string>();
 
-            if (chat is not null)
+            while (await reader.ReadLineAsync() is { } line)
             {
-                _conversationId = chat.ConversationId;
-                _messages.Add(new LocalMessage("assistant", chat.Message));
-                await LoadConversationsAsync();
-                await LoadEngineStatusAsync();
+                if (!string.IsNullOrEmpty(line))
+                {
+                    if (line.StartsWith("event: conversation", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    if (line.StartsWith("data: ", StringComparison.Ordinal))
+                    {
+                        eventData.Add(line[6..]);
+                        continue;
+                    }
+                }
+
+                if (eventData.Count == 0)
+                {
+                    continue;
+                }
+
+                var data = string.Join("\n", eventData);
+                eventData.Clear();
+                if (Guid.TryParse(data, out var streamedConversationId))
+                {
+                    conversationId = streamedConversationId.ToString();
+                    continue;
+                }
+
+                if (data == "ok")
+                {
+                    continue;
+                }
+
+                answer.Append(data);
+                _messages[assistantIndex] = new LocalMessage("assistant", answer.ToString());
+                await InvokeAsync(StateHasChanged);
             }
+
+            if (Guid.TryParse(conversationId, out var id))
+            {
+                _conversationId = id;
+            }
+
+            await LoadConversationsAsync();
+            await LoadEngineStatusAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            _error = "A resposta foi interrompida.";
+        }
+        catch (Exception exception)
+        {
+            _error = $"Erro no chat: {exception.Message}";
         }
         finally
         {
@@ -162,11 +319,69 @@
         }
     }
 
+    private void OnResumirClick() => SetPrompt("Resumir o seguinte texto");
+    private void OnExplicarClick() => SetPrompt("Explica o conceito de");
+    private void OnAnalisarClick() => SetPrompt("Analisa o seguinte documento");
+
+    private void SetPrompt(string prompt)
+    {
+        _form.Message = prompt;
+    }
+
     private void NewConversation()
     {
         _conversationId = null;
         _messages.Clear();
         _error = null;
+    }
+
+    private void BeginRename(ConversationSummary conversation)
+    {
+        _renamingConversationId = conversation.Id;
+        _renameTitle = conversation.Title;
+    }
+
+    private void CancelRename()
+    {
+        _renamingConversationId = null;
+        _renameTitle = "";
+    }
+
+    private async Task SaveRenameAsync()
+    {
+        if (_renamingConversationId is null || string.IsNullOrWhiteSpace(_renameTitle))
+        {
+            return;
+        }
+
+        var response = await Http.PutAsJsonAsync(
+            $"/api/conversations/{_renamingConversationId}",
+            new RenameConversationRequest(_renameTitle));
+        if (!response.IsSuccessStatusCode)
+        {
+            _error = "Não foi possível renomear a conversa.";
+            return;
+        }
+
+        CancelRename();
+        await LoadConversationsAsync();
+    }
+
+    private async Task DeleteConversationAsync(Guid id)
+    {
+        var response = await Http.DeleteAsync($"/api/conversations/{id}");
+        if (!response.IsSuccessStatusCode)
+        {
+            _error = "Não foi possível apagar a conversa.";
+            return;
+        }
+
+        if (_conversationId == id)
+        {
+            NewConversation();
+        }
+
+        await LoadConversationsAsync();
     }
 
     private async Task OpenConversationAsync(Guid id)
@@ -193,22 +408,20 @@
         _engine = await Http.GetFromJsonAsync<EngineStatus>("/api/engine/status");
     }
 
-    private async Task LoadModelsAsync()
-    {
-        _models = await Http.GetFromJsonAsync<List<ModelInfo>>("/api/models") ?? [];
-    }
-
-    private async Task MarkModelAsync(string model)
-    {
-        var response = await Http.PostAsJsonAsync("/api/models/load", new LoadModelRequest(model));
-        response.EnsureSuccessStatusCode();
-        await LoadModelsAsync();
-    }
-
     private sealed class ChatForm
     {
         public string Message { get; set; } = "";
     }
 
     private sealed record LocalMessage(string Role, string Content);
+
+    private string GetAvatarLetter()
+    {
+        if (string.IsNullOrWhiteSpace(_currentUser?.DisplayName))
+        {
+            return "U";
+        }
+
+        return _currentUser.DisplayName[..1].ToUpperInvariant();
+    }
 }

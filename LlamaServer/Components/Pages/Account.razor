@@ -1,0 +1,154 @@
+@page "/account"
+@attribute [Authorize]
+@rendermode @(new InteractiveServerRenderMode())
+@inject HttpClient Http
+@inject NavigationManager Navigation
+
+<main class="auth-shell">
+    <section class="auth-card account-card">
+        <h1>Minha conta</h1>
+
+        @if (_me is null)
+        {
+            <p class="muted">A carregar dados da conta...</p>
+        }
+        else
+        {
+            <p class="muted">ID: <code>@_me.Id</code></p>
+            <p class="muted">Utilizador: <strong>@_me.Username</strong></p>
+            <p class="muted">Role: <strong>@_me.Role</strong></p>
+
+            <EditForm Model="_profileForm" OnValidSubmit="SaveProfileAsync" class="auth-form">
+                <label>
+                    Nome visivel
+                    <InputText @bind-Value="_profileForm.DisplayName" />
+                </label>
+                <button type="submit" disabled="@_savingProfile">@(_savingProfile ? "A guardar..." : "Guardar nome")</button>
+            </EditForm>
+
+            <EditForm Model="_passwordForm" OnValidSubmit="ChangePasswordAsync" class="auth-form" style="margin-top: 20px;">
+                <label>
+                    Password atual
+                    <InputText type="password" @bind-Value="_passwordForm.CurrentPassword" />
+                </label>
+                <label>
+                    Nova password
+                    <InputText type="password" @bind-Value="_passwordForm.NewPassword" />
+                </label>
+                <button type="submit" disabled="@_savingPassword">@(_savingPassword ? "A atualizar..." : "Mudar password")</button>
+            </EditForm>
+
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <p class="muted">@_message</p>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <p class="error">@_error</p>
+            }
+        }
+
+        <p class="auth-switch"><a href="/" class="auth-link">Voltar ao chat</a></p>
+    </section>
+</main>
+
+@code {
+    private AuthUserDto? _me;
+    private readonly ProfileForm _profileForm = new();
+    private readonly PasswordForm _passwordForm = new();
+    private bool _savingProfile;
+    private bool _savingPassword;
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadProfileAsync();
+    }
+
+    private async Task LoadProfileAsync()
+    {
+        var response = await Http.GetAsync("/api/auth/me");
+        if (!response.IsSuccessStatusCode)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        _me = await response.Content.ReadFromJsonAsync<AuthUserDto>();
+        if (_me is null)
+        {
+            _error = "Nao foi possivel carregar a conta.";
+            return;
+        }
+
+        _profileForm.DisplayName = _me.DisplayName;
+    }
+
+    private async Task SaveProfileAsync()
+    {
+        _savingProfile = true;
+        _message = null;
+        _error = null;
+
+        try
+        {
+            var response = await Http.PutAsJsonAsync("/api/account/profile", new UpdateProfileRequest(_profileForm.DisplayName));
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+                _error = error?.Error ?? "Nao foi possivel atualizar o nome.";
+                return;
+            }
+
+            _me = await response.Content.ReadFromJsonAsync<AuthUserDto>();
+            _message = "Nome atualizado com sucesso.";
+        }
+        finally
+        {
+            _savingProfile = false;
+        }
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        _savingPassword = true;
+        _message = null;
+        _error = null;
+
+        try
+        {
+            var response = await Http.PutAsJsonAsync(
+                "/api/account/password",
+                new ChangePasswordRequest(_passwordForm.CurrentPassword, _passwordForm.NewPassword));
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+                _error = error?.Error ?? "Nao foi possivel atualizar a password.";
+                return;
+            }
+
+            _passwordForm.CurrentPassword = "";
+            _passwordForm.NewPassword = "";
+            _message = "Password atualizada com sucesso.";
+        }
+        finally
+        {
+            _savingPassword = false;
+        }
+    }
+
+    private sealed class ProfileForm
+    {
+        public string DisplayName { get; set; } = "";
+    }
+
+    private sealed class PasswordForm
+    {
+        public string CurrentPassword { get; set; } = "";
+        public string NewPassword { get; set; } = "";
+    }
+}
+

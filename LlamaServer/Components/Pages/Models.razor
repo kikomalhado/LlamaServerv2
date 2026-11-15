@@ -1,0 +1,248 @@
+@page "/models"
+@attribute [Authorize]
+@rendermode @(new InteractiveServerRenderMode())
+@inject HttpClient Http
+@inject NavigationManager Navigation
+
+<main class="shell">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">🦙</div>
+            <h1 class="sidebar-title">Llama Server</h1>
+        </div>
+
+        <nav class="sidebar-nav">
+            <div class="nav-section">
+                <a class="nav-item" href="/">
+                    <span class="nav-icon">◌</span>
+                    Conversas
+                </a>
+                <a class="nav-item active" href="/models">
+                    <span class="nav-icon">◈</span>
+                    Modelos
+                </a>
+            </div>
+            <div class="nav-section">
+                <button type="button" class="nav-item">
+                    <span class="nav-icon">▧</span>
+                    Documentos
+                </button>
+                <button type="button" class="nav-item">
+                    <span class="nav-icon">□</span>
+                    Workspaces
+                </button>
+                @if (_isAdmin)
+                {
+                    <a class="nav-item" href="/settings">
+                        <span class="nav-icon">⚙</span>
+                        Definições
+                    </a>
+                }
+            </div>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="user-avatar">@GetAvatarLetter()</div>
+            <div class="user-info">
+                <p class="user-name">@(_currentUser?.DisplayName ?? "Utilizador")</p>
+                <p class="user-role">@(_isAdmin ? "Admin" : "User")</p>
+            </div>
+            <a href="/account" class="nav-mini-link">Conta</a>
+            <form method="post" action="/auth/logout">
+                <AntiforgeryToken />
+                <button type="submit" class="secondary nav-logout">Sair</button>
+            </form>
+        </div>
+    </aside>
+
+    <section class="page-panel">
+        <header class="chat-header">
+            <div>
+                <p class="eyebrow">Biblioteca local</p>
+                <h2 class="chat-title">Modelos</h2>
+                <p class="muted">Modelos separados por engine, prontos para futuras funcionalidades.</p>
+            </div>
+            <div class="engine-status @(_engine?.IsRunning == true ? "online" : "offline")">
+                <span></span>
+                @(_engine?.IsRunning == true ? "Modelo carregado" : "Motor desligado")
+            </div>
+        </header>
+
+        <div class="models-content">
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <p class="error">@_error</p>
+            }
+
+            <section class="model-folder">
+                <div class="folder-heading">
+                    <div class="folder-icon">📁</div>
+                    <div>
+                        <h3>llama.cpp</h3>
+                        <p>@_cppDirectory</p>
+                    </div>
+                    <span class="folder-count">@_cppModels.Count modelo(s)</span>
+                </div>
+                @if (_cppModels.Count == 0)
+                {
+                    <p class="folder-empty">Nenhum `.gguf` nesta pasta.</p>
+                }
+                else
+                {
+                    <div class="models-grid">
+                        @foreach (var model in _cppModels)
+                        {
+                            <article class="model-card @(model.IsActive ? "selected" : "")">
+                                <div class="model-card-icon">◈</div>
+                                <div class="model-card-info">
+                                    <h3>@model.Name</h3>
+                                    <p>@FormatBytes(model.SizeBytes)</p>
+                                </div>
+                                @if (model.IsActive)
+                                {
+                                    <span class="model-badge">Ativo</span>
+                                }
+                                else
+                                {
+                                    <button type="button" disabled="@(!_isAdmin || _saving)" @onclick="() => SelectCppModelAsync(model.Name)">
+                                        @(_isAdmin ? "Usar modelo" : "Admin necessário")
+                                    </button>
+                                }
+                            </article>
+                        }
+                    </div>
+                }
+            </section>
+
+            <section class="model-folder">
+                <div class="folder-heading">
+                    <div class="folder-icon">📁</div>
+                    <div>
+                        <h3>LLamaSharp</h3>
+                        <p>@_llamaSharpDirectory</p>
+                    </div>
+                    <span class="folder-count">@_llamaSharpModels.Count modelo(s)</span>
+                </div>
+                @if (_llamaSharpModels.Count == 0)
+                {
+                    <p class="folder-empty">Nenhum `.gguf` nesta pasta.</p>
+                }
+                else
+                {
+                    <div class="models-grid">
+                        @foreach (var model in _llamaSharpModels)
+                        {
+                            <article class="model-card @(model.IsActive ? "selected" : "")">
+                                <div class="model-card-icon">◈</div>
+                                <div class="model-card-info">
+                                    <h3>@model.Name</h3>
+                                    <p>@FormatBytes(model.SizeBytes)</p>
+                                </div>
+                                @if (model.IsActive)
+                                {
+                                    <span class="model-badge">Configurado</span>
+                                }
+                                else
+                                {
+                                    <button type="button" disabled="@(!_isAdmin || _saving)" @onclick="() => SelectLlamaSharpModelAsync(model.Name)">
+                                        @(_isAdmin ? "Usar modelo" : "Admin necessário")
+                                    </button>
+                                }
+                            </article>
+                        }
+                    </div>
+                }
+            </section>
+        </div>
+    </section>
+</main>
+
+@code {
+    private List<ModelInfo> _cppModels = [];
+    private List<ModelInfo> _llamaSharpModels = [];
+    private string _cppDirectory = "LocalModels";
+    private string _llamaSharpDirectory = "LLamaSharp models";
+    private AuthUserDto? _currentUser;
+    private EngineStatus? _engine;
+    private string? _error;
+    private bool _isAdmin;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _currentUser = await Http.GetFromJsonAsync<AuthUserDto>("/api/auth/me");
+        if (_currentUser is null)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        _isAdmin = string.Equals(_currentUser.Role, UserRole.Admin, StringComparison.OrdinalIgnoreCase);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var cppSettings = await Http.GetFromJsonAsync<ServerSettingsDto>("/api/settings");
+        var llamaSharpSettings = await Http.GetFromJsonAsync<LlamaSharpConfig>("/api/settings/llamasharp");
+        _cppDirectory = cppSettings?.ModelDirectory ?? _cppDirectory;
+        _llamaSharpDirectory = llamaSharpSettings?.ModelDirectory ?? _llamaSharpDirectory;
+        _cppModels = await Http.GetFromJsonAsync<List<ModelInfo>>("/api/models") ?? [];
+        _llamaSharpModels = await Http.GetFromJsonAsync<List<ModelInfo>>("/api/llamasharp/models") ?? [];
+        _engine = await Http.GetFromJsonAsync<EngineStatus>("/api/engine/status");
+    }
+
+    private async Task SelectCppModelAsync(string model)
+    {
+        _saving = true;
+        _error = null;
+        try
+        {
+            var response = await Http.PostAsJsonAsync("/api/models/load", new LoadModelRequest(model));
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = $"Não foi possível selecionar o modelo (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task SelectLlamaSharpModelAsync(string model)
+    {
+        _saving = true;
+        _error = null;
+        try
+        {
+            var response = await Http.PostAsJsonAsync("/api/llamasharp/models/load", new LoadModelRequest(model));
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = $"Não foi possível selecionar o modelo (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1_000_000_000 => $"{bytes / 1_000_000_000d:0.##} GB",
+        >= 1_000_000 => $"{bytes / 1_000_000d:0.##} MB",
+        >= 1_000 => $"{bytes / 1_000d:0.##} KB",
+        _ => $"{bytes} B"
+    };
+
+    private string GetAvatarLetter() => string.IsNullOrWhiteSpace(_currentUser?.DisplayName)
+        ? "U"
+        : _currentUser.DisplayName[..1].ToUpperInvariant();
+}

@@ -1,0 +1,175 @@
+@page "/settings"
+@attribute [Authorize(Roles = UserRole.Admin)]
+@rendermode @(new InteractiveServerRenderMode())
+@inject HttpClient Http
+
+<main class="shell">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">🦙</div>
+            <h1 class="sidebar-title">Llama Server</h1>
+        </div>
+
+        <nav class="sidebar-nav">
+            <div class="nav-section">
+                <a class="nav-item" href="/">
+                    <span class="nav-icon">◌</span>
+                    Conversas
+                </a>
+                <a class="nav-item" href="/models">
+                    <span class="nav-icon">◈</span>
+                    Modelos
+                </a>
+            </div>
+            <div class="nav-section">
+                <button type="button" class="nav-item">
+                    <span class="nav-icon">▧</span>
+                    Documentos
+                </button>
+                <button type="button" class="nav-item">
+                    <span class="nav-icon">□</span>
+                    Workspaces
+                </button>
+                <a class="nav-item active" href="/settings">
+                    <span class="nav-icon">⚙</span>
+                    Definições
+                </a>
+            </div>
+        </nav>
+
+        <div class="sidebar-footer">
+            <a href="/account" class="nav-mini-link">Conta</a>
+            <a href="/admin/users" class="nav-mini-link">Gestão</a>
+            <form method="post" action="/auth/logout">
+                <AntiforgeryToken />
+                <button type="submit" class="secondary nav-logout">Sair</button>
+            </form>
+        </div>
+    </aside>
+
+    <section class="page-panel settings-page">
+        <header class="chat-header">
+            <div>
+                <p class="eyebrow">Administração</p>
+                <h2 class="chat-title">Definições do servidor</h2>
+                <p class="muted">Configura a engine usada pelo chat. O chat não aparece nesta página.</p>
+            </div>
+            <div class="engine-status @(_status?.IsRunning == true ? "online" : "offline")">
+                <span></span>
+                @(_status?.IsRunning == true ? "Motor ligado" : "Motor desligado")
+            </div>
+        </header>
+
+        <div class="settings-content">
+            @if (_form is null)
+            {
+                <p class="muted">A carregar definições...</p>
+            }
+            else
+            {
+                <EditForm Model="_form" OnValidSubmit="SaveAsync" class="settings-form settings-card-panel">
+                    <label>
+                        Engine ativa
+                        <InputSelect @bind-Value="_form.Engine">
+                            <option value="llama.cpp">llama.cpp</option>
+                            <option value="llamasharp">LLamaSharp</option>
+                        </InputSelect>
+                    </label>
+                    <label>
+                        URL do motor llama.cpp
+                        <InputText @bind-Value="_form.EngineUrl" />
+                        <small class="field-help">Usado apenas quando llama.cpp estiver selecionado.</small>
+                    </label>
+                    <label>
+                        Pasta de modelos llama.cpp
+                        <InputText @bind-Value="_form.ModelDirectory" />
+                    </label>
+                    <div class="management-actions">
+                        <button type="submit" disabled="@_saving">
+                            @(_saving ? "A guardar..." : "Guardar definições")
+                        </button>
+                        <button type="button" class="secondary" @onclick="TestEngineAsync">Testar motor</button>
+                        <a class="secondary settings-link" href="/settings/llamasharp">Configurar LLamaSharp</a>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_message))
+                    {
+                        <p class="success">@_message</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_error))
+                    {
+                        <p class="error">@_error</p>
+                    }
+                </EditForm>
+            }
+        </div>
+    </section>
+</main>
+
+@code {
+    private SettingsForm? _form;
+    private EngineStatus? _status;
+    private string? _message;
+    private string? _error;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var settings = await Http.GetFromJsonAsync<ServerSettingsDto>("/api/settings");
+        if (settings is not null)
+        {
+            _form = new SettingsForm
+            {
+                Engine = settings.Engine,
+                EngineUrl = settings.EngineUrl,
+                ModelDirectory = settings.ModelDirectory
+            };
+        }
+
+        await TestEngineAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_form is null)
+        {
+            return;
+        }
+
+        _saving = true;
+        _message = null;
+        _error = null;
+        try
+        {
+            var response = await Http.PutAsJsonAsync("/api/settings", new UpdateServerSettingsRequest(
+                _form.Engine,
+                _form.EngineUrl,
+                _form.ModelDirectory));
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+                _error = error?.Error ?? "Não foi possível guardar as definições.";
+                return;
+            }
+
+            _message = "Definições guardadas.";
+            await TestEngineAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task TestEngineAsync()
+    {
+        _status = await Http.GetFromJsonAsync<EngineStatus>("/api/engine/status");
+    }
+
+    private sealed class SettingsForm
+    {
+        public string Engine { get; set; } = "llama.cpp";
+        public string EngineUrl { get; set; } = "";
+        public string ModelDirectory { get; set; } = "";
+    }
+}

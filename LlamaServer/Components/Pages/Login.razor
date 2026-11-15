@@ -1,0 +1,43 @@
+@page "/login"
+@attribute [AllowAnonymous]
+
+<main class="auth-shell">
+    <section class="auth-card">
+        <h1>Entrar</h1>
+        <p class="muted">Acede à tua conta para continuar no Llama Server.</p>
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <p class="error">@_error</p>
+        }
+
+        <form method="post" action="/auth/login" class="auth-form">
+            <AntiforgeryToken />
+            <label>
+                Utilizador
+                <input name="username" required minlength="3" autocomplete="username" />
+            </label>
+
+            <label>
+                Password
+                <input type="password" name="password" required minlength="6" autocomplete="current-password" />
+            </label>
+
+            <button type="submit">Entrar</button>
+        </form>
+
+        <p class="muted auth-switch">Nao tens conta? <a href="/signup" class="auth-link">Criar conta</a></p>
+    </section>
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    private string? ErrorQuery { get; set; }
+
+    private string? _error;
+
+    protected override void OnParametersSet()
+    {
+        _error = ErrorQuery;
+    }
+}
