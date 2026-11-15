@@ -22,23 +22,15 @@
                     Modelos
                 </a>
             </div>
-            <div class="nav-section">
-                <button type="button" class="nav-item">
-                    <span class="nav-icon">▧</span>
-                    Documentos
-                </button>
-                <button type="button" class="nav-item">
-                    <span class="nav-icon">□</span>
-                    Workspaces
-                </button>
-                @if (_isAdmin)
+            
+            @if (_isAdmin)
                 {
                     <a class="nav-item" href="/settings">
                         <span class="nav-icon">⚙</span>
                         Definições
                     </a>
                 }
-            </div>
+
         </nav>
 
         <div class="sidebar-footer">
