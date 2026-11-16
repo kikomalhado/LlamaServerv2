@@ -130,18 +130,40 @@
                                     <h3>@model.Name</h3>
                                     <p>@FormatBytes(model.SizeBytes)</p>
                                 </div>
-                                @if (model.IsActive)
+                                @if (_isAdmin)
                                 {
-                                    <span class="model-badge">Configurado</span>
+                                    <button type="button" class="secondary" disabled="@_saving" @onclick="() => ToggleLlamaSharpAccess(model.Name)">
+                                        @(model.IsAllowed ? "Disponível para utilizadores" : "Bloqueado para utilizadores")
+                                    </button>
+                                }
+                                @if (model.IsActive && model.IsAllowed)
+                                {
+                                    <span class="model-badge">Configurado e disponível</span>
+                                }
+                                else if (model.IsActive)
+                                {
+                                    <span class="model-badge">Configurado, mas bloqueado</span>
+                                }
+                                else if (model.IsAllowed)
+                                {
+                                    <button type="button" disabled="@_saving" @onclick="() => SelectLlamaSharpModelAsync(model.Name)">
+                                        Usar modelo
+                                    </button>
                                 }
                                 else
                                 {
-                                    <button type="button" disabled="@(!_isAdmin || _saving)" @onclick="() => SelectLlamaSharpModelAsync(model.Name)">
-                                        @(_isAdmin ? "Usar modelo" : "Admin necessário")
-                                    </button>
+                                    <span class="model-badge">Indisponível</span>
                                 }
                             </article>
                         }
+                    </div>
+                }
+                @if (_isAdmin && _llamaSharpModels.Count > 0)
+                {
+                    <div class="management-actions" style="margin-top: 16px;">
+                        <button type="button" disabled="@_saving" @onclick="SaveLlamaSharpAccessAsync">
+                            @(_saving ? "A guardar..." : "Guardar permissões")
+                        </button>
                     </div>
                 }
             </section>
@@ -215,6 +237,40 @@
             if (!response.IsSuccessStatusCode)
             {
                 _error = $"Não foi possível selecionar o modelo (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void ToggleLlamaSharpAccess(string model)
+    {
+        var index = _llamaSharpModels.FindIndex(candidate => candidate.Name == model);
+        if (index >= 0)
+        {
+            var current = _llamaSharpModels[index];
+            _llamaSharpModels[index] = current with { IsAllowed = !current.IsAllowed };
+        }
+    }
+
+    private async Task SaveLlamaSharpAccessAsync()
+    {
+        _saving = true;
+        _error = null;
+        try
+        {
+            var response = await Http.PutAsJsonAsync(
+                "/api/llamasharp/models/access",
+                new UpdateLlamaSharpModelAccessRequest(
+                    _llamaSharpModels.Where(model => model.IsAllowed).Select(model => model.Name).ToList()));
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = $"Não foi possível guardar as permissões (HTTP {(int)response.StatusCode}).";
                 return;
             }
 

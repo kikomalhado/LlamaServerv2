@@ -293,6 +293,15 @@ api.MapPost("/llamasharp/models/load", async (
     return selected
         ? Results.Ok(await models.ListModelsAsync(cancellationToken))
         : Results.NotFound(new { error = "Modelo LLamaSharp não encontrado nas pastas configuradas." });
+});
+
+api.MapPut("/llamasharp/models/access", async (
+    UpdateLlamaSharpModelAccessRequest request,
+    SettingsManager settings,
+    CancellationToken cancellationToken) =>
+{
+    await settings.SetLlamaSharpAllowedModelsAsync(request.Models, cancellationToken);
+    return Results.Ok();
 }).RequireAuthorization("AdminOnly");
 
 api.MapGet("/engine/status", async (LlamaCppClient llama, CancellationToken cancellationToken) =>

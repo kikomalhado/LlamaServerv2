@@ -9,13 +9,19 @@ public sealed class LlamaSharpModelManager(
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
     {
         var config = await settings.GetLlamaSharpAsync(cancellationToken);
+        var allowed = await settings.GetLlamaSharpAllowedModelsAsync(cancellationToken);
         return GetDirectories(config.ModelDirectory)
             .SelectMany(directory => Directory.EnumerateFiles(directory, "*.gguf", SearchOption.TopDirectoryOnly))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(path =>
             {
                 var file = new FileInfo(path);
-                return new ModelInfo(file.Name, file.FullName, file.Length, file.Name == config.Model);
+                return new ModelInfo(
+                    file.Name,
+                    file.FullName,
+                    file.Length,
+                    file.Name == config.Model,
+                    allowed is null || allowed.Contains(file.Name));
             })
             .OrderBy(model => model.Name)
             .ToList();
@@ -24,8 +30,9 @@ public sealed class LlamaSharpModelManager(
     public async Task<bool> SelectModelAsync(string model, CancellationToken cancellationToken)
     {
         var selected = Path.GetFileName(model);
-        if (string.IsNullOrWhiteSpace(selected)
-            || !(await ListModelsAsync(cancellationToken)).Any(candidate => candidate.Name == selected))
+        var candidate = (await ListModelsAsync(cancellationToken))
+            .FirstOrDefault(candidate => candidate.Name == selected);
+        if (candidate is null || !candidate.IsAllowed)
         {
             return false;
         }

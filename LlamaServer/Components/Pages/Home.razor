@@ -25,10 +25,12 @@
 
         <label class="conversation-search">
             <span aria-hidden="true">⌕</span>
-            <input type="search" placeholder="Pesquisar conversas..." aria-label="Pesquisar conversas" />
+            <input type="search"
+                   placeholder="Pesquisar conversas..."
+                   aria-label="Pesquisar conversas"
+                   @bind="_conversationSearch"
+                   @bind:event="oninput" />
         </label>
-
-     
 
         <nav class="workspace-nav" aria-label="Navegação principal">
             <span class="workspace-nav-label">Workspace</span>
@@ -44,15 +46,19 @@
         </nav>
 
         <div class="conversation-history">
-            <div class="history-heading"><span>Histórico</span><span class="history-count">@_conversations.Count</span></div>
+            <div class="history-heading"><span>Histórico</span><span class="history-count">@FilteredConversations.Count()</span></div>
             <div class="conversation-list">
-                @if (_conversations.Count == 0)
+                @if (!FilteredConversations.Any())
                 {
-                    <p class="history-empty">Ainda sem conversas.</p>
+                    <p class="history-empty">
+                        @(string.IsNullOrWhiteSpace(_conversationSearch)
+                            ? "Ainda sem conversas."
+                            : "Nenhuma conversa encontrada.")
+                    </p>
                 }
                 else
                 {
-                    @foreach (var conversation in _conversations)
+                    @foreach (var conversation in FilteredConversations)
                     {
                         var isActive = conversation.Id == _conversationId;
                         var activeClass = isActive ? "active" : "";
@@ -203,7 +209,14 @@
     private AuthUserDto? _currentUser;
     private bool _isAdmin;
     private Guid? _renamingConversationId;
+    private string _conversationSearch = "";
     private string _renameTitle = "";
+
+    private IEnumerable<ConversationSummary> FilteredConversations =>
+        string.IsNullOrWhiteSpace(_conversationSearch)
+            ? _conversations
+            : _conversations.Where(conversation =>
+                conversation.Title.Contains(_conversationSearch.Trim(), StringComparison.OrdinalIgnoreCase));
 
     protected override async Task OnInitializedAsync()
     {

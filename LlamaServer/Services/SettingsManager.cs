@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 using LlamaServer.Data;
 using LlamaServer.Models;
 
@@ -18,6 +19,7 @@ public sealed class SettingsManager(
     private const string LlamaSharpGpuLayerCountKey = "LlamaSharpGpuLayerCount";
     private const string LlamaSharpThreadsKey = "LlamaSharpThreads";
     private const string LlamaSharpBatchSizeKey = "LlamaSharpBatchSize";
+    private const string LlamaSharpAllowedModelsKey = "LlamaSharpAllowedModels";
     private readonly LlamaServerOptions _defaults = options.Value;
 
     public async Task<ServerSettingsDto> GetAsync(CancellationToken cancellationToken)
@@ -124,6 +126,40 @@ public sealed class SettingsManager(
     public async Task SetLlamaSharpModelAsync(string model, CancellationToken cancellationToken)
     {
         await SetAsync(LlamaSharpModelKey, model, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlySet<string>?> GetLlamaSharpAllowedModelsAsync(CancellationToken cancellationToken)
+    {
+        var value = await db.Settings
+            .Where(setting => setting.Key == LlamaSharpAllowedModelsKey)
+            .Select(setting => setting.Value)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return value is null
+            ? null
+            : new HashSet<string>(JsonSerializer.Deserialize<string[]>(value) ?? [], StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task SetLlamaSharpAllowedModelsAsync(
+        IEnumerable<string> models,
+        CancellationToken cancellationToken)
+    {
+        var allowed = models
+            .Select(Path.GetFileName)
+            .OfType<string>()
+            .Where(model => model.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await SetAsync(LlamaSharpAllowedModelsKey, JsonSerializer.Serialize(allowed), cancellationToken);
+        var active = await db.Settings.FindAsync([LlamaSharpModelKey], cancellationToken);
+        if (active is not null && !allowed.Contains(active.Value, StringComparer.OrdinalIgnoreCase))
+        {
+            active.Value = allowed.FirstOrDefault() ?? "";
+        }
+
         await db.SaveChangesAsync(cancellationToken);
     }
 

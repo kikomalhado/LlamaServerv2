@@ -22,7 +22,7 @@ public sealed class ModelManager(
             .Select(path =>
             {
                 var file = new FileInfo(path);
-                return new ModelInfo(file.Name, file.FullName, file.Length, file.Name == active);
+                return new ModelInfo(file.Name, file.FullName, file.Length, file.Name == active, true);
             })
             .OrderBy(model => model.Name)
             .ToList();

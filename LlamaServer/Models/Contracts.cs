@@ -31,7 +31,11 @@ public sealed record ModelInfo(
     string Name,
     string Path,
     long SizeBytes,
-    bool IsActive);
+    bool IsActive,
+    bool IsAllowed);
+
+public sealed record UpdateLlamaSharpModelAccessRequest(
+    IReadOnlyList<string> Models);
 
 public sealed record LoadModelResponse(
     string ActiveModel,

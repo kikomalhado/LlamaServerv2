@@ -21,25 +21,21 @@
                     Modelos
                 </a>
             </div>
-            <div class="nav-section">
-                <button type="button" class="nav-item">
-                    <span class="nav-icon">▧</span>
-                    Documentos
-                </button>
-                <button type="button" class="nav-item">
-                    <span class="nav-icon">□</span>
-                    Workspaces
-                </button>
+            
                 <a class="nav-item active" href="/settings">
                     <span class="nav-icon">⚙</span>
                     Definições
                 </a>
-            </div>
+            
         </nav>
 
         <div class="sidebar-footer">
+            <div class="user-avatar">@GetAvatarLetter()</div>
+            <div class="user-info">
+                <p class="user-name">@(_currentUser?.DisplayName ?? "Utilizador")</p>
+                <p class="user-role">@(_isAdmin ? "Admin" : "User")</p>
+            </div>
             <a href="/account" class="nav-mini-link">Conta</a>
-            <a href="/admin/users" class="nav-mini-link">Gestão</a>
             <form method="post" action="/auth/logout">
                 <AntiforgeryToken />
                 <button type="submit" class="secondary nav-logout">Sair</button>
@@ -108,6 +104,8 @@
 @code {
     private SettingsForm? _form;
     private EngineStatus? _status;
+    private AuthUserDto? _currentUser;
+    private bool _isAdmin;
     private string? _message;
     private string? _error;
     private bool _saving;
@@ -172,4 +170,8 @@
         public string EngineUrl { get; set; } = "";
         public string ModelDirectory { get; set; } = "";
     }
+    
+    private string GetAvatarLetter() => string.IsNullOrWhiteSpace(_currentUser?.DisplayName)
+        ? "U"
+        : _currentUser.DisplayName[..1].ToUpperInvariant();
 }

@@ -1,6 +1,7 @@
 using LLama;
 using LLama.Common;
 using LLama.Sampling;
+using LLama.Transformers;
 using LlamaServer.Models;
 
 namespace LlamaServer.Services;
@@ -80,13 +81,39 @@ public sealed class LlamaSharpClient(
         var inference = new InferenceParams
         {
             MaxTokens = 512,
+            AntiPrompts = ["<|im_end|>", "User:"],
             SamplingPipeline = new DefaultSamplingPipeline()
         };
 
-        await foreach (var token in new ChatSession(executor, history)
+        var session = new ChatSession(executor, history)
+            .WithHistoryTransform(new PromptTemplateTransformer(model));
+        var firstOutput = new System.Text.StringBuilder();
+        const string assistantMarker = "Assistant:";
+
+        await foreach (var token in session
             .ChatAsync(new ChatHistory.Message(AuthorRole.User, lastUserMessage.Content), inference)
             .WithCancellation(cancellationToken))
         {
+            if (firstOutput.Length < assistantMarker.Length)
+            {
+                firstOutput.Append(token);
+                var buffered = firstOutput.ToString();
+                if (assistantMarker.StartsWith(buffered, StringComparison.Ordinal))
+                {
+                    if (buffered.Length < assistantMarker.Length)
+                    {
+                        continue;
+                    }
+
+                    yield return buffered[assistantMarker.Length..];
+                    continue;
+                }
+
+                yield return buffered;
+                firstOutput.Clear();
+                continue;
+            }
+
             yield return token;
         }
     }
