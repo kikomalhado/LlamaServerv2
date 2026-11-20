@@ -1,0 +1,66 @@
+@page "/documents"
+@attribute [Authorize]
+@rendermode @(new InteractiveServerRenderMode())
+@inject HttpClient Http
+@inject NavigationManager Navigation
+@using LlamaServer.Components.Shared
+
+<main class="shell">
+    <aside class="sidebar">
+        <div class="sidebar-header"><div class="sidebar-logo">🦙</div><h1 class="sidebar-title">Llama Server</h1></div>
+        <nav class="sidebar-nav"><div class="nav-section">
+            <a class="nav-item" href="/"><span class="nav-icon">◌</span>Conversas</a>
+            <a class="nav-item active" href="/documents"><span class="nav-icon">▧</span>Documentos</a>
+            <a class="nav-item" href="/models"><span class="nav-icon">◈</span>Modelos</a>
+            @if (_isAdmin) { <a class="nav-item" href="/settings"><span class="nav-icon">⚙</span>Definições</a> }
+        </div></nav>
+        <div class="sidebar-footer"><a href="/account" class="nav-mini-link">Conta</a><form method="post" action="/auth/logout"><AntiforgeryToken /><button type="submit" class="secondary nav-logout">Sair</button></form></div>
+    </aside>
+    <section class="page-panel">
+        <header class="chat-header"><div><p class="eyebrow">RAG local</p><h2 class="chat-title">Documentos</h2><p class="muted">Ficheiros privados e publicados pelo admin podem ser usados no chat.</p></div><button type="button" class="secondary" @onclick="LoadAsync">Atualizar</button></header>
+        <div class="models-content">
+            @if (!string.IsNullOrWhiteSpace(_message)) { <p class="success">@_message</p> }
+            @if (!string.IsNullOrWhiteSpace(_error)) { <p class="error">@_error</p> }
+            <section class="settings-card-panel"><h3>Adicionar ficheiro</h3><p class="field-help">PDF, DOCX, XLSX, TXT, MD ou JSON. A indexação corre em segundo plano.</p><InputFile OnChange="UploadAsync" accept=".pdf,.docx,.xlsx,.txt,.md,.json" />@if (_uploading) { <p class="muted">A enviar...</p> }</section>
+            <DocumentList Title="Os meus documentos" Description="Visíveis apenas para ti." Documents="@_documents.Where(d => !d.IsShared).ToList()" IsAdmin="@_isAdmin" OnDelete="DeleteAsync" OnReindex="ReindexAsync" OnShare="@(value => SetSharedAsync(value.Id, value.Shared))" />
+            <DocumentList Title="Documentos partilhados" Description="Publicados e geridos pelo admin." Documents="@_documents.Where(d => d.IsShared).ToList()" IsAdmin="@_isAdmin" OnDelete="DeleteAsync" OnReindex="ReindexAsync" OnShare="@(value => SetSharedAsync(value.Id, value.Shared))" />
+        </div>
+    </section>
+</main>
+
+@code {
+    private const long MaxUploadSize = 104_857_600;
+    private List<DocumentInfo> _documents = [];
+    private bool _isAdmin;
+    private bool _uploading;
+    private string? _message;
+    private string? _error;
+    protected override async Task OnInitializedAsync()
+    {
+        var user = await Http.GetFromJsonAsync<AuthUserDto>("/api/auth/me");
+        if (user is null) { Navigation.NavigateTo("/login", true); return; }
+        _isAdmin = string.Equals(user.Role, UserRole.Admin, StringComparison.OrdinalIgnoreCase);
+        await LoadAsync();
+    }
+    private async Task LoadAsync() => _documents = await Http.GetFromJsonAsync<List<DocumentInfo>>("/api/documents") ?? [];
+    private async Task UploadAsync(InputFileChangeEventArgs args)
+    {
+        _uploading = true; _message = null; _error = null;
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            await using var stream = args.File.OpenReadStream(MaxUploadSize);
+            using var fileContent = new StreamContent(stream);
+            content.Add(fileContent, "file", args.File.Name);
+            var response = await Http.PostAsync("/api/documents", content);
+            if (!response.IsSuccessStatusCode) { _error = (await response.Content.ReadFromJsonAsync<ErrorResponse>())?.Error ?? "Não foi possível carregar o ficheiro."; return; }
+            _message = "Ficheiro carregado. A indexação começou em segundo plano.";
+            await LoadAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _uploading = false; }
+    }
+    private async Task DeleteAsync(Guid id) { if ((await Http.DeleteAsync($"/api/documents/{id}")).IsSuccessStatusCode) await LoadAsync(); else _error = "Não foi possível apagar o documento."; }
+    private async Task ReindexAsync(Guid id) { if ((await Http.PostAsync($"/api/documents/{id}/reindex", null)).IsSuccessStatusCode) await LoadAsync(); else _error = "Não foi possível reindexar o documento."; }
+    private async Task SetSharedAsync(Guid id, bool shared) { if ((await Http.PutAsJsonAsync($"/api/documents/{id}/sharing", new UpdateDocumentSharingRequest(shared))).IsSuccessStatusCode) await LoadAsync(); else _error = "Não foi possível alterar a partilha."; }
+}

@@ -20,6 +20,10 @@
                     <span class="nav-icon">◈</span>
                     Modelos
                 </a>
+                <a class="nav-item" href="/documents">
+                    <span class="nav-icon">▧</span>
+                    Documentos
+                </a>
             </div>
             
                 <a class="nav-item active" href="/settings">
@@ -97,6 +101,25 @@
                     }
                 </EditForm>
             }
+            @if (_documentsForm is not null)
+            {
+                <EditForm Model="_documentsForm" OnValidSubmit="SaveDocumentsAsync" class="settings-form settings-card-panel">
+                    <h3>Documentos e RAG</h3>
+                    <label>Pasta de documentos<InputText @bind-Value="_documentsForm.DocumentsRoot" /></label>
+                    <label>Modelo de embeddings GGUF<InputText @bind-Value="_documentsForm.EmbeddingModel" /><small class="field-help">Nome do ficheiro dentro da pasta de embeddings.</small></label>
+                    <label>Pasta de modelos de embeddings<InputText @bind-Value="_documentsForm.EmbeddingModelDirectory" /></label>
+                    <label>Tamanho máximo por ficheiro (bytes)<InputNumber @bind-Value="_documentsForm.MaxFileSizeBytes" /></label>
+                    <label>Quota por utilizador (bytes)<InputNumber @bind-Value="_documentsForm.UserQuotaBytes" /></label>
+                    <label>Quota global (bytes)<InputNumber @bind-Value="_documentsForm.GlobalQuotaBytes" /></label>
+                    <label>Concorrência da indexação<InputNumber @bind-Value="_documentsForm.IndexingConcurrency" /></label>
+                    <label>Tamanho do chunk (tokens)<InputNumber @bind-Value="_documentsForm.ChunkSize" /></label>
+                    <label>Sobreposição (tokens)<InputNumber @bind-Value="_documentsForm.ChunkOverlap" /></label>
+                    <label>Resultados RAG<InputNumber @bind-Value="_documentsForm.ResultCount" /></label>
+                    <button type="submit" disabled="@_savingDocuments">@(_savingDocuments ? "A guardar..." : "Guardar RAG")</button>
+                    @if (!string.IsNullOrWhiteSpace(_documentsMessage)) { <p class="success">@_documentsMessage</p> }
+                    @if (!string.IsNullOrWhiteSpace(_documentsError)) { <p class="error">@_documentsError</p> }
+                </EditForm>
+            }
         </div>
     </section>
 </main>
@@ -109,9 +132,15 @@
     private string? _message;
     private string? _error;
     private bool _saving;
+    private DocumentSettingsForm? _documentsForm;
+    private bool _savingDocuments;
+    private string? _documentsMessage;
+    private string? _documentsError;
 
     protected override async Task OnInitializedAsync()
     {
+        _currentUser = await Http.GetFromJsonAsync<AuthUserDto>("/api/auth/me");
+        _isAdmin = string.Equals(_currentUser?.Role, UserRole.Admin, StringComparison.OrdinalIgnoreCase);
         var settings = await Http.GetFromJsonAsync<ServerSettingsDto>("/api/settings");
         if (settings is not null)
         {
@@ -120,6 +149,24 @@
                 Engine = settings.Engine,
                 EngineUrl = settings.EngineUrl,
                 ModelDirectory = settings.ModelDirectory
+            };
+        }
+
+        var documentSettings = await Http.GetFromJsonAsync<DocumentSettingsDto>("/api/settings/documents");
+        if (documentSettings is not null)
+        {
+            _documentsForm = new DocumentSettingsForm
+            {
+                DocumentsRoot = documentSettings.DocumentsRoot,
+                MaxFileSizeBytes = documentSettings.MaxFileSizeBytes,
+                UserQuotaBytes = documentSettings.UserQuotaBytes,
+                GlobalQuotaBytes = documentSettings.GlobalQuotaBytes,
+                EmbeddingModelDirectory = documentSettings.EmbeddingModelDirectory,
+                EmbeddingModel = documentSettings.EmbeddingModel,
+                IndexingConcurrency = documentSettings.IndexingConcurrency,
+                ChunkSize = documentSettings.ChunkSize,
+                ChunkOverlap = documentSettings.ChunkOverlap,
+                ResultCount = documentSettings.ResultCount
             };
         }
 
@@ -164,11 +211,41 @@
         _status = await Http.GetFromJsonAsync<EngineStatus>("/api/engine/status");
     }
 
+    private async Task SaveDocumentsAsync()
+    {
+        if (_documentsForm is null) return;
+        _savingDocuments = true; _documentsMessage = null; _documentsError = null;
+        try
+        {
+            var response = await Http.PutAsJsonAsync("/api/settings/documents", new UpdateDocumentSettingsRequest(
+                _documentsForm.DocumentsRoot, _documentsForm.MaxFileSizeBytes, _documentsForm.UserQuotaBytes,
+                _documentsForm.GlobalQuotaBytes, _documentsForm.EmbeddingModelDirectory, _documentsForm.EmbeddingModel,
+                _documentsForm.IndexingConcurrency, _documentsForm.ChunkSize, _documentsForm.ChunkOverlap, _documentsForm.ResultCount));
+            if (!response.IsSuccessStatusCode) { _documentsError = (await response.Content.ReadFromJsonAsync<ErrorResponse>())?.Error ?? "Não foi possível guardar as definições RAG."; return; }
+            _documentsMessage = "Definições RAG guardadas.";
+        }
+        finally { _savingDocuments = false; }
+    }
+
     private sealed class SettingsForm
     {
         public string Engine { get; set; } = "llama.cpp";
         public string EngineUrl { get; set; } = "";
         public string ModelDirectory { get; set; } = "";
+    }
+
+    private sealed class DocumentSettingsForm
+    {
+        public string DocumentsRoot { get; set; } = "AppData/Documents";
+        public long MaxFileSizeBytes { get; set; }
+        public long UserQuotaBytes { get; set; }
+        public long GlobalQuotaBytes { get; set; }
+        public string EmbeddingModelDirectory { get; set; } = "Embedding models";
+        public string EmbeddingModel { get; set; } = "";
+        public int IndexingConcurrency { get; set; } = 1;
+        public int ChunkSize { get; set; } = 800;
+        public int ChunkOverlap { get; set; } = 120;
+        public int ResultCount { get; set; } = 6;
     }
     
     private string GetAvatarLetter() => string.IsNullOrWhiteSpace(_currentUser?.DisplayName)

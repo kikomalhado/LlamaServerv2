@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using LLama.Native;
 using LlamaServer.Components;
@@ -12,6 +13,8 @@ using LlamaServer.Models;
 using LlamaServer.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 1_073_741_824);
 
 // CUDA is attempted first; LLamaSharp falls back to the CPU backend when it is unavailable.
 NativeLibraryConfig.All.WithCuda(true).WithAutoFallback(true);
@@ -27,6 +30,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient<LlamaCppClient>();
 builder.Services.AddScoped<LlamaSharpModelManager>();
 builder.Services.AddScoped<LlamaSharpClient>();
+builder.Services.AddSingleton<LlamaSharpModelCache>();
 builder.Services.AddScoped(sp =>
 {
     var navigation = sp.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
@@ -58,6 +62,14 @@ builder.Services.AddCascadingAuthenticationState();
 
 builder.Services.AddScoped<ModelManager>();
 builder.Services.AddScoped<SettingsManager>();
+builder.Services.AddSingleton<DocumentIndexQueue>();
+builder.Services.AddHostedService<DocumentIndexWorker>();
+builder.Services.AddSingleton<EmbeddingModelCache>();
+builder.Services.AddScoped<DocumentService>();
+builder.Services.AddScoped<DocumentTextExtractor>();
+builder.Services.AddScoped<DocumentIndexer>();
+builder.Services.AddScoped<RagService>();
+builder.Services.AddSingleton<ConversationLockManager>();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddOpenApi();
@@ -69,6 +81,8 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.EnsureCreatedAsync();
     await EnsureSchemaUpgradesAsync(db);
+    await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+    await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=30000;");
     await SeedAdminUserAsync(db);
 }
 if (app.Environment.IsDevelopment())
@@ -187,6 +201,8 @@ api.MapPost("/chat", async (
     HttpContext httpContext,
     AppDbContext db,
     LlamaCppClient llama,
+    RagService rag,
+    ConversationLockManager conversationLocks,
     CancellationToken cancellationToken) =>
 {
     var userId = GetUserId(httpContext.User);
@@ -196,34 +212,39 @@ api.MapPost("/chat", async (
     }
 
     var conversation = await GetOrCreateConversationAsync(db, userId.Value, request.ConversationId, cancellationToken);
-    var userMessage = new ChatMessage
+    var conversationLock = conversationLocks.Get(conversation.Id);
+    await conversationLock.WaitAsync(cancellationToken);
+    try
     {
-        ConversationId = conversation.Id,
-        Role = "user",
-        Content = request.Message.Trim()
-    };
+        var userMessage = new ChatMessage
+        {
+            ConversationId = conversation.Id,
+            Role = "user",
+            Content = request.Message.Trim()
+        };
 
-    db.Messages.Add(userMessage);
-    await db.SaveChangesAsync(cancellationToken);
+        db.Messages.Add(userMessage);
+        await db.SaveChangesAsync(cancellationToken);
 
-    var history = await db.Messages
-        .Where(message => message.ConversationId == conversation.Id)
-        .OrderBy(message => message.CreatedAt)
-        .Select(message => new LlamaChatMessage(message.Role, message.Content))
-        .ToListAsync(cancellationToken);
+        var history = await BuildChatHistoryAsync(db, conversation.Id, userId.Value, request.Message, rag, cancellationToken);
 
-    var answer = await llama.CompleteChatAsync(history, cancellationToken);
+        var answer = await llama.CompleteChatAsync(history, cancellationToken);
 
-    db.Messages.Add(new ChatMessage
+        db.Messages.Add(new ChatMessage
+        {
+            ConversationId = conversation.Id,
+            Role = "assistant",
+            Content = answer
+        });
+        conversation.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Ok(new ChatResponse(conversation.Id, answer));
+    }
+    finally
     {
-        ConversationId = conversation.Id,
-        Role = "assistant",
-        Content = answer
-    });
-    conversation.UpdatedAt = DateTime.UtcNow;
-    await db.SaveChangesAsync(cancellationToken);
-
-    return Results.Ok(new ChatResponse(conversation.Id, answer));
+        conversationLock.Release();
+    }
 });
 
 api.MapPost("/chat/stream", async (
@@ -231,6 +252,8 @@ api.MapPost("/chat/stream", async (
     HttpContext httpContext,
     AppDbContext db,
     LlamaCppClient llama,
+    RagService rag,
+    ConversationLockManager conversationLocks,
     CancellationToken cancellationToken) =>
 {
     var userId = GetUserId(httpContext.User);
@@ -241,41 +264,46 @@ api.MapPost("/chat/stream", async (
     }
 
     var conversation = await GetOrCreateConversationAsync(db, userId.Value, request.ConversationId, cancellationToken);
-    db.Messages.Add(new ChatMessage
+    var conversationLock = conversationLocks.Get(conversation.Id);
+    await conversationLock.WaitAsync(cancellationToken);
+    try
     {
-        ConversationId = conversation.Id,
-        Role = "user",
-        Content = request.Message.Trim()
-    });
-    await db.SaveChangesAsync(cancellationToken);
+        db.Messages.Add(new ChatMessage
+        {
+            ConversationId = conversation.Id,
+            Role = "user",
+            Content = request.Message.Trim()
+        });
+        await db.SaveChangesAsync(cancellationToken);
 
-    var history = await db.Messages
-        .Where(message => message.ConversationId == conversation.Id)
-        .OrderBy(message => message.CreatedAt)
-        .Select(message => new LlamaChatMessage(message.Role, message.Content))
-        .ToListAsync(cancellationToken);
+        var history = await BuildChatHistoryAsync(db, conversation.Id, userId.Value, request.Message, rag, cancellationToken);
 
-    httpContext.Response.Headers.ContentType = "text/event-stream";
-    await httpContext.Response.WriteAsync($"event: conversation\ndata: {conversation.Id}\n\n", cancellationToken);
+        httpContext.Response.Headers.ContentType = "text/event-stream";
+        await httpContext.Response.WriteAsync($"event: conversation\ndata: {conversation.Id}\n\n", cancellationToken);
 
-    var answer = "";
-    await foreach (var token in llama.StreamChatAsync(history, cancellationToken))
-    {
-        answer += token;
-        await httpContext.Response.WriteAsync($"data: {Sse.Encode(token)}\n\n", cancellationToken);
-        await httpContext.Response.Body.FlushAsync(cancellationToken);
+        var answer = "";
+        await foreach (var token in llama.StreamChatAsync(history, cancellationToken))
+        {
+            answer += token;
+            await httpContext.Response.WriteAsync($"data: {Sse.Encode(token)}\n\n", cancellationToken);
+            await httpContext.Response.Body.FlushAsync(cancellationToken);
+        }
+
+        db.Messages.Add(new ChatMessage
+        {
+            ConversationId = conversation.Id,
+            Role = "assistant",
+            Content = answer
+        });
+        conversation.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+
+        await httpContext.Response.WriteAsync("event: done\ndata: ok\n\n", cancellationToken);
     }
-
-    db.Messages.Add(new ChatMessage
+    finally
     {
-        ConversationId = conversation.Id,
-        Role = "assistant",
-        Content = answer
-    });
-    conversation.UpdatedAt = DateTime.UtcNow;
-    await db.SaveChangesAsync(cancellationToken);
-
-    await httpContext.Response.WriteAsync("event: done\ndata: ok\n\n", cancellationToken);
+        conversationLock.Release();
+    }
 });
 
 api.MapGet("/models", async (ModelManager models, CancellationToken cancellationToken) =>
@@ -283,6 +311,105 @@ api.MapGet("/models", async (ModelManager models, CancellationToken cancellation
 
 api.MapGet("/llamasharp/models", async (LlamaSharpModelManager models, CancellationToken cancellationToken) =>
     Results.Ok(await models.ListModelsAsync(cancellationToken)));
+
+api.MapGet("/documents", async (
+    HttpContext httpContext,
+    DocumentService documents,
+    CancellationToken cancellationToken) =>
+{
+    var userId = GetUserId(httpContext.User);
+    return userId is null
+        ? Results.Unauthorized()
+        : Results.Ok(await documents.ListAsync(userId.Value, httpContext.User.IsInRole(UserRole.Admin), cancellationToken));
+});
+
+api.MapPost("/documents", async (
+    HttpContext httpContext,
+    DocumentService documents,
+    CancellationToken cancellationToken) =>
+{
+    var userId = GetUserId(httpContext.User);
+    if (userId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var form = await httpContext.Request.ReadFormAsync(cancellationToken);
+        var file = form.Files.GetFile("file");
+        return file is null
+            ? Results.BadRequest(new ErrorResponse("Seleciona um ficheiro."))
+            : Results.Accepted($"/api/documents", await documents.UploadAsync(userId.Value, file, cancellationToken));
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(new ErrorResponse(exception.Message));
+    }
+});
+
+api.MapDelete("/documents/{id:guid}", async (
+    Guid id,
+    HttpContext httpContext,
+    DocumentService documents,
+    CancellationToken cancellationToken) =>
+{
+    var userId = GetUserId(httpContext.User);
+    if (userId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return await documents.DeleteAsync(id, userId.Value, httpContext.User.IsInRole(UserRole.Admin), cancellationToken)
+        ? Results.Ok()
+        : Results.NotFound();
+});
+
+api.MapPut("/documents/{id:guid}/sharing", async (
+    Guid id,
+    UpdateDocumentSharingRequest request,
+    DocumentService documents,
+    CancellationToken cancellationToken) =>
+    await documents.SetSharedAsync(id, request.IsShared, cancellationToken)
+        ? Results.Ok()
+        : Results.NotFound()).RequireAuthorization("AdminOnly");
+
+api.MapPost("/documents/{id:guid}/reindex", async (
+    Guid id,
+    HttpContext httpContext,
+    DocumentService documents,
+    CancellationToken cancellationToken) =>
+{
+    var userId = GetUserId(httpContext.User);
+    if (userId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return await documents.ReindexAsync(id, userId.Value, httpContext.User.IsInRole(UserRole.Admin), cancellationToken)
+        ? Results.Accepted()
+        : Results.NotFound();
+});
+
+api.MapGet("/settings/documents", async (
+    SettingsManager settings,
+    CancellationToken cancellationToken) => Results.Ok(await settings.GetDocumentSettingsAsync(cancellationToken)))
+    .RequireAuthorization("AdminOnly");
+
+api.MapPut("/settings/documents", async (
+    UpdateDocumentSettingsRequest request,
+    SettingsManager settings,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        return Results.Ok(await settings.UpdateDocumentSettingsAsync(request, cancellationToken));
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(new ErrorResponse(exception.Message));
+    }
+}).RequireAuthorization("AdminOnly");
 
 api.MapPost("/llamasharp/models/load", async (
     LoadModelRequest request,
@@ -640,6 +767,28 @@ app.MapRazorComponents<App>()
 
 app.Run();
 
+static async Task<List<LlamaChatMessage>> BuildChatHistoryAsync(
+    AppDbContext db,
+    Guid conversationId,
+    Guid userId,
+    string question,
+    RagService rag,
+    CancellationToken cancellationToken)
+{
+    var history = await db.Messages
+        .Where(message => message.ConversationId == conversationId)
+        .OrderBy(message => message.CreatedAt)
+        .Select(message => new LlamaChatMessage(message.Role, message.Content))
+        .ToListAsync(cancellationToken);
+    var context = await rag.BuildContextAsync(userId, question.Trim(), cancellationToken);
+    if (!string.IsNullOrWhiteSpace(context))
+    {
+        history.Insert(0, new LlamaChatMessage("system", context));
+    }
+
+    return history;
+}
+
 static async Task<Conversation> GetOrCreateConversationAsync(
     AppDbContext db,
     Guid userId,
@@ -743,6 +892,36 @@ static async Task EnsureSchemaUpgradesAsync(AppDbContext db)
     await EnsureColumnExistsAsync(db, "Conversations", "UserId", "ALTER TABLE Conversations ADD COLUMN UserId TEXT NULL;");
     await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS IX_Users_Username ON Users (Username);");
     await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS IX_Conversations_UserId ON Conversations (UserId);");
+    await db.Database.ExecuteSqlRawAsync(
+        """
+        CREATE TABLE IF NOT EXISTS DocumentFiles (
+            Id TEXT NOT NULL CONSTRAINT PK_DocumentFiles PRIMARY KEY,
+            OwnerUserId TEXT NULL,
+            OriginalName TEXT NOT NULL,
+            StoredPath TEXT NOT NULL,
+            Extension TEXT NOT NULL,
+            SizeBytes INTEGER NOT NULL,
+            IsShared INTEGER NOT NULL,
+            Status TEXT NOT NULL,
+            ErrorMessage TEXT NULL,
+            EmbeddingModel TEXT NULL,
+            CreatedAt TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL,
+            CONSTRAINT FK_DocumentFiles_Users_OwnerUserId FOREIGN KEY (OwnerUserId) REFERENCES Users (Id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS DocumentChunks (
+            Id TEXT NOT NULL CONSTRAINT PK_DocumentChunks PRIMARY KEY,
+            DocumentFileId TEXT NOT NULL,
+            ChunkIndex INTEGER NOT NULL,
+            Text TEXT NOT NULL,
+            Embedding BLOB NOT NULL,
+            PageNumber INTEGER NULL,
+            Section TEXT NULL,
+            CONSTRAINT FK_DocumentChunks_DocumentFiles_DocumentFileId FOREIGN KEY (DocumentFileId) REFERENCES DocumentFiles (Id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS IX_DocumentChunks_DocumentFileId_ChunkIndex ON DocumentChunks (DocumentFileId, ChunkIndex);
+        CREATE INDEX IF NOT EXISTS IX_DocumentFiles_OwnerUserId_Status ON DocumentFiles (OwnerUserId, Status);
+        """);
 }
 
 static async Task EnsureColumnExistsAsync(AppDbContext db, string table, string column, string alterSql)

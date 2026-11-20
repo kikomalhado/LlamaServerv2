@@ -12,6 +12,8 @@ gen
 **/obj/
 **/*.gguf
 **/.DS_Store
+**/AppData/Documents/
+**/Embedding models/
 
 
 

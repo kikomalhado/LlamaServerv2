@@ -13,6 +13,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<AppSetting> Settings => Set<AppSetting>();
 
+    public DbSet<DocumentFile> DocumentFiles => Set<DocumentFile>();
+
+    public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserAccount>()
@@ -33,5 +37,21 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<AppSetting>()
             .HasKey(setting => setting.Key);
+
+        modelBuilder.Entity<DocumentFile>()
+            .HasOne(document => document.OwnerUser)
+            .WithMany()
+            .HasForeignKey(document => document.OwnerUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<DocumentFile>()
+            .HasMany(document => document.Chunks)
+            .WithOne(chunk => chunk.DocumentFile)
+            .HasForeignKey(chunk => chunk.DocumentFileId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DocumentChunk>()
+            .HasIndex(chunk => new { chunk.DocumentFileId, chunk.ChunkIndex })
+            .IsUnique();
     }
 }

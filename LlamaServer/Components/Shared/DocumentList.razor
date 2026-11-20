@@ -1,0 +1,28 @@
+@using LlamaServer.Models
+@namespace LlamaServer.Components.Shared
+
+<section class="model-folder">
+    <div class="folder-heading"><div class="folder-icon">▧</div><div><h3>@Title</h3><p>@Description</p></div><span class="folder-count">@Documents.Count documento(s)</span></div>
+    <div class="documents-list">
+        @if (Documents.Count == 0) { <p class="muted">Ainda não existem documentos nesta lista.</p> }
+        @foreach (var document in Documents)
+        {
+            <article class="document-row">
+                <div><strong>@document.OriginalName</strong><small>@FormatSize(document.SizeBytes) · @StatusText(document.Status) · @document.Extension</small>@if (!string.IsNullOrWhiteSpace(document.ErrorMessage)) { <p class="error">@document.ErrorMessage</p> }</div>
+                <div class="document-actions"><button type="button" class="secondary" @onclick="() => OnReindex.InvokeAsync(document.Id)">Reindexar</button>@if (IsAdmin) { <button type="button" class="secondary" @onclick="() => OnShare.InvokeAsync((document.Id, !document.IsShared))">@(document.IsShared ? "Despublicar" : "Publicar")</button> }@if (IsAdmin || !document.IsShared) { <button type="button" class="secondary" @onclick="() => OnDelete.InvokeAsync(document.Id)">Apagar</button> }</div>
+            </article>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Documentos";
+    [Parameter] public string Description { get; set; } = "";
+    [Parameter] public IReadOnlyList<DocumentInfo> Documents { get; set; } = [];
+    [Parameter] public bool IsAdmin { get; set; }
+    [Parameter] public EventCallback<Guid> OnDelete { get; set; }
+    [Parameter] public EventCallback<Guid> OnReindex { get; set; }
+    [Parameter] public EventCallback<(Guid Id, bool Shared)> OnShare { get; set; }
+    private static string FormatSize(long bytes) => bytes < 1024 ? $"{bytes} B" : bytes < 1024 * 1024 ? $"{bytes / 1024d:0.0} KB" : $"{bytes / 1024d / 1024:0.0} MB";
+    private static string StatusText(string status) => status switch { DocumentStatus.Pending => "Pendente", DocumentStatus.Processing => "A processar", DocumentStatus.Ready => "Pronto", DocumentStatus.Failed => "Erro", _ => status };
+}

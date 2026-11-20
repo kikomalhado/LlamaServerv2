@@ -8,7 +8,8 @@ namespace LlamaServer.Services;
 
 public sealed class LlamaSharpClient(
     SettingsManager settings,
-    LlamaSharpModelManager models)
+    LlamaSharpModelManager models,
+    LlamaSharpModelCache modelCache)
 {
     public async Task<EngineStatus> GetStatusAsync(CancellationToken cancellationToken)
     {
@@ -56,8 +57,7 @@ public sealed class LlamaSharpClient(
             BatchSize = config.BatchSize
         };
 
-        // shortcut: model loads per request, upgrade to a shared cache when concurrent inference matters.
-        using var model = LLamaWeights.LoadFromFile(parameters);
+        var model = modelCache.GetOrLoad(path, parameters);
         using var context = model.CreateContext(parameters);
         var executor = new InteractiveExecutor(context);
         var history = new ChatHistory();

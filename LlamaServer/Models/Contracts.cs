@@ -111,3 +111,40 @@ public sealed record AdminUpdateUserRequest(
     string? NewPassword);
 
 public sealed record ErrorResponse(string Error);
+
+public sealed record DocumentInfo(
+    Guid Id,
+    string OriginalName,
+    string Extension,
+    long SizeBytes,
+    bool IsShared,
+    string Status,
+    string? ErrorMessage,
+    DateTime CreatedAt,
+    DateTime UpdatedAt);
+
+public sealed record UpdateDocumentSharingRequest(bool IsShared);
+
+public sealed record DocumentSettingsDto(
+    string DocumentsRoot,
+    long MaxFileSizeBytes,
+    long UserQuotaBytes,
+    long GlobalQuotaBytes,
+    string EmbeddingModelDirectory,
+    string EmbeddingModel,
+    int IndexingConcurrency,
+    int ChunkSize,
+    int ChunkOverlap,
+    int ResultCount);
+
+public sealed record UpdateDocumentSettingsRequest(
+    string DocumentsRoot,
+    long MaxFileSizeBytes,
+    long UserQuotaBytes,
+    long GlobalQuotaBytes,
+    string EmbeddingModelDirectory,
+    string EmbeddingModel,
+    int IndexingConcurrency,
+    int ChunkSize,
+    int ChunkOverlap,
+    int ResultCount);

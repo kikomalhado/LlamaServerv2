@@ -19,4 +19,24 @@ public sealed class LlamaServerOptions
     public int LlamaSharpThreads { get; set; }
 
     public uint LlamaSharpBatchSize { get; set; } = 512;
+
+    public string DocumentsRoot { get; set; } = "AppData/Documents";
+
+    public long DocumentMaxFileSizeBytes { get; set; } = 104_857_600;
+
+    public long DocumentUserQuotaBytes { get; set; } = 1_073_741_824;
+
+    public long DocumentGlobalQuotaBytes { get; set; } = 10_737_418_240;
+
+    public string EmbeddingModelDirectory { get; set; } = "Embedding models";
+
+    public string EmbeddingModel { get; set; } = "";
+
+    public int DocumentIndexingConcurrency { get; set; } = 1;
+
+    public int RagChunkSize { get; set; } = 800;
+
+    public int RagChunkOverlap { get; set; } = 120;
+
+    public int RagResultCount { get; set; } = 6;
 }

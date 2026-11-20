@@ -8,7 +8,8 @@ namespace LlamaServer.Services;
 
 public sealed class SettingsManager(
     AppDbContext db,
-    IOptions<LlamaServerOptions> options)
+    IOptions<LlamaServerOptions> options,
+    DocumentIndexQueue queue)
 {
     private const string EngineUrlKey = "EngineUrl";
     private const string ModelDirectoryKey = "ModelDirectory";
@@ -20,6 +21,16 @@ public sealed class SettingsManager(
     private const string LlamaSharpThreadsKey = "LlamaSharpThreads";
     private const string LlamaSharpBatchSizeKey = "LlamaSharpBatchSize";
     private const string LlamaSharpAllowedModelsKey = "LlamaSharpAllowedModels";
+    private const string DocumentsRootKey = "DocumentsRoot";
+    private const string DocumentMaxFileSizeKey = "DocumentMaxFileSizeBytes";
+    private const string DocumentUserQuotaKey = "DocumentUserQuotaBytes";
+    private const string DocumentGlobalQuotaKey = "DocumentGlobalQuotaBytes";
+    private const string EmbeddingModelDirectoryKey = "EmbeddingModelDirectory";
+    private const string EmbeddingModelKey = "EmbeddingModel";
+    private const string DocumentIndexingConcurrencyKey = "DocumentIndexingConcurrency";
+    private const string RagChunkSizeKey = "RagChunkSize";
+    private const string RagChunkOverlapKey = "RagChunkOverlap";
+    private const string RagResultCountKey = "RagResultCount";
     private readonly LlamaServerOptions _defaults = options.Value;
 
     public async Task<ServerSettingsDto> GetAsync(CancellationToken cancellationToken)
@@ -163,6 +174,86 @@ public sealed class SettingsManager(
         await db.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task<DocumentSettingsDto> GetDocumentSettingsAsync(CancellationToken cancellationToken)
+    {
+        var keys = new[]
+        {
+            DocumentsRootKey, DocumentMaxFileSizeKey, DocumentUserQuotaKey, DocumentGlobalQuotaKey,
+            EmbeddingModelDirectoryKey, EmbeddingModelKey, DocumentIndexingConcurrencyKey,
+            RagChunkSizeKey, RagChunkOverlapKey, RagResultCountKey
+        };
+        var values = await db.Settings
+            .Where(setting => keys.Contains(setting.Key))
+            .ToDictionaryAsync(setting => setting.Key, setting => setting.Value, cancellationToken);
+
+        return new DocumentSettingsDto(
+            GetValue(values, DocumentsRootKey, _defaults.DocumentsRoot),
+            GetLongValue(values, DocumentMaxFileSizeKey, _defaults.DocumentMaxFileSizeBytes),
+            GetLongValue(values, DocumentUserQuotaKey, _defaults.DocumentUserQuotaBytes),
+            GetLongValue(values, DocumentGlobalQuotaKey, _defaults.DocumentGlobalQuotaBytes),
+            GetValue(values, EmbeddingModelDirectoryKey, _defaults.EmbeddingModelDirectory),
+            GetValue(values, EmbeddingModelKey, _defaults.EmbeddingModel),
+            GetIntValue(values, DocumentIndexingConcurrencyKey, _defaults.DocumentIndexingConcurrency),
+            GetIntValue(values, RagChunkSizeKey, _defaults.RagChunkSize),
+            GetIntValue(values, RagChunkOverlapKey, _defaults.RagChunkOverlap),
+            GetIntValue(values, RagResultCountKey, _defaults.RagResultCount));
+    }
+
+    public async Task<DocumentSettingsDto> UpdateDocumentSettingsAsync(
+        UpdateDocumentSettingsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var root = request.DocumentsRoot.Trim();
+        var embeddingDirectory = request.EmbeddingModelDirectory.Trim();
+        var embeddingModel = Path.GetFileName(request.EmbeddingModel.Trim());
+        if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(embeddingDirectory))
+        {
+            throw new ArgumentException("As pastas de documentos e embeddings são obrigatórias.", nameof(request));
+        }
+
+        if (request.MaxFileSizeBytes < 1_048_576
+            || request.UserQuotaBytes < request.MaxFileSizeBytes
+            || request.GlobalQuotaBytes < request.UserQuotaBytes)
+        {
+            throw new ArgumentException("Os limites de ficheiros e quotas não são válidos.", nameof(request));
+        }
+
+        if (request.IndexingConcurrency is < 1 or > 4
+            || request.ChunkSize is < 200 or > 4000
+            || request.ChunkOverlap < 0
+            || request.ChunkOverlap >= request.ChunkSize
+            || request.ResultCount is < 1 or > 20)
+        {
+            throw new ArgumentException("Os parâmetros de indexação não são válidos.", nameof(request));
+        }
+
+        var oldEmbeddingModel = (await GetDocumentSettingsAsync(cancellationToken)).EmbeddingModel;
+        await SetAsync(DocumentsRootKey, root, cancellationToken);
+        await SetAsync(DocumentMaxFileSizeKey, request.MaxFileSizeBytes.ToString(), cancellationToken);
+        await SetAsync(DocumentUserQuotaKey, request.UserQuotaBytes.ToString(), cancellationToken);
+        await SetAsync(DocumentGlobalQuotaKey, request.GlobalQuotaBytes.ToString(), cancellationToken);
+        await SetAsync(EmbeddingModelDirectoryKey, embeddingDirectory, cancellationToken);
+        await SetAsync(EmbeddingModelKey, embeddingModel, cancellationToken);
+        await SetAsync(DocumentIndexingConcurrencyKey, request.IndexingConcurrency.ToString(), cancellationToken);
+        await SetAsync(RagChunkSizeKey, request.ChunkSize.ToString(), cancellationToken);
+        await SetAsync(RagChunkOverlapKey, request.ChunkOverlap.ToString(), cancellationToken);
+        await SetAsync(RagResultCountKey, request.ResultCount.ToString(), cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+        if (!string.Equals(oldEmbeddingModel, embeddingModel, StringComparison.OrdinalIgnoreCase))
+        {
+            var documents = await db.DocumentFiles.Where(document => document.Status == DocumentStatus.Ready).ToListAsync(cancellationToken);
+            foreach (var document in documents)
+            {
+                document.Status = DocumentStatus.Pending;
+                document.ErrorMessage = null;
+                document.UpdatedAt = DateTime.UtcNow;
+                await queue.EnqueueAsync(document.Id, cancellationToken);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        return await GetDocumentSettingsAsync(cancellationToken);
+    }
+
     private async Task SetAsync(string key, string value, CancellationToken cancellationToken)
     {
         var setting = await db.Settings.FindAsync([key], cancellationToken);
@@ -189,4 +280,7 @@ public sealed class SettingsManager(
 
     private static int GetIntValue(IReadOnlyDictionary<string, string> values, string key, int fallback) =>
         values.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) ? parsed : fallback;
+
+    private static long GetLongValue(IReadOnlyDictionary<string, string> values, string key, long fallback) =>
+        values.TryGetValue(key, out var value) && long.TryParse(value, out var parsed) ? parsed : fallback;
 }

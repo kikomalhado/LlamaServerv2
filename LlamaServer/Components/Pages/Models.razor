@@ -21,6 +21,11 @@
                     <span class="nav-icon">◈</span>
                     Modelos
                 </a>
+                <a class="workspace-nav-item" href="/documents">
+                    <span class="workspace-nav-icon">▧</span>
+                    <span>Documentos</span>
+                </a>
+               
             </div>
             
             @if (_isAdmin)
@@ -64,6 +69,26 @@
             @if (!string.IsNullOrWhiteSpace(_error))
             {
                 <p class="error">@_error</p>
+            }
+
+            @if (_isAdmin && _pathForm is not null)
+            {
+                <EditForm Model="_pathForm" OnValidSubmit="AddModelFolderAsync" class="settings-card-panel settings-form">
+                    <h3>Adicionar pasta</h3>
+                    <p class="field-help">Escolhe uma pasta existente onde o servidor deve procurar ficheiros GGUF.</p>
+                    <label>
+                        Pasta
+                        <InputText @bind-Value="_pathForm.Folder" placeholder="Ex.: /modelos ou C:\Modelos" />
+                    </label>
+                    <label>
+                        Para onde?
+                        <InputSelect @bind-Value="_pathForm.Target">
+                            <option value="llamasharp">LLamaSharp</option>
+                            <option value="llama.cpp">llama.cpp</option>
+                        </InputSelect>
+                    </label>
+                    <button type="submit" disabled="@_saving">@(_saving ? "A guardar..." : "Adicionar pasta")</button>
+                </EditForm>
             }
 
             <section class="model-folder">
@@ -181,6 +206,9 @@
     private string? _error;
     private bool _isAdmin;
     private bool _saving;
+    private ServerSettingsDto? _serverSettings;
+    private LlamaSharpConfig? _llamaSharpSettings;
+    private ModelPathForm? _pathForm;
 
     protected override async Task OnInitializedAsync()
     {
@@ -197,13 +225,54 @@
 
     private async Task LoadAsync()
     {
-        var cppSettings = await Http.GetFromJsonAsync<ServerSettingsDto>("/api/settings");
-        var llamaSharpSettings = await Http.GetFromJsonAsync<LlamaSharpConfig>("/api/settings/llamasharp");
-        _cppDirectory = cppSettings?.ModelDirectory ?? _cppDirectory;
-        _llamaSharpDirectory = llamaSharpSettings?.ModelDirectory ?? _llamaSharpDirectory;
+        _serverSettings = await Http.GetFromJsonAsync<ServerSettingsDto>("/api/settings");
+        _llamaSharpSettings = await Http.GetFromJsonAsync<LlamaSharpConfig>("/api/settings/llamasharp");
+        _cppDirectory = _serverSettings?.ModelDirectory ?? _cppDirectory;
+        _llamaSharpDirectory = _llamaSharpSettings?.ModelDirectory ?? _llamaSharpDirectory;
+        if (_isAdmin)
+        {
+            _pathForm ??= new ModelPathForm();
+        }
         _cppModels = await Http.GetFromJsonAsync<List<ModelInfo>>("/api/models") ?? [];
         _llamaSharpModels = await Http.GetFromJsonAsync<List<ModelInfo>>("/api/llamasharp/models") ?? [];
         _engine = await Http.GetFromJsonAsync<EngineStatus>("/api/engine/status");
+    }
+
+    private async Task AddModelFolderAsync()
+    {
+        if (_pathForm is null || _serverSettings is null || _llamaSharpSettings is null) return;
+        _saving = true;
+        _error = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_pathForm.Folder))
+            {
+                _error = "Indica a pasta dos modelos.";
+                return;
+            }
+
+            if (string.Equals(_pathForm.Target, "llamasharp", StringComparison.OrdinalIgnoreCase))
+            {
+                var folders = _llamaSharpSettings.ModelDirectory
+                    .Split([';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToList();
+                if (!folders.Contains(_pathForm.Folder.Trim(), StringComparer.OrdinalIgnoreCase)) folders.Add(_pathForm.Folder.Trim());
+                var response = await Http.PutAsJsonAsync("/api/settings/llamasharp", new UpdateLlamaSharpSettingsRequest(
+                    string.Join(';', folders), _llamaSharpSettings.ContextSize, _llamaSharpSettings.GpuLayerCount,
+                    _llamaSharpSettings.Threads, _llamaSharpSettings.BatchSize));
+                if (!response.IsSuccessStatusCode) { _error = "Não foi possível adicionar a pasta LLamaSharp."; return; }
+            }
+            else
+            {
+                var response = await Http.PutAsJsonAsync("/api/settings", new UpdateServerSettingsRequest(
+                    _serverSettings.Engine, _serverSettings.EngineUrl, _pathForm.Folder.Trim()));
+                if (!response.IsSuccessStatusCode) { _error = "Não foi possível adicionar a pasta llama.cpp."; return; }
+            }
+
+            _pathForm.Folder = "";
+            await LoadAsync();
+        }
+        finally { _saving = false; }
     }
 
     private async Task SelectCppModelAsync(string model)
@@ -293,4 +362,10 @@
     private string GetAvatarLetter() => string.IsNullOrWhiteSpace(_currentUser?.DisplayName)
         ? "U"
         : _currentUser.DisplayName[..1].ToUpperInvariant();
+
+    private sealed class ModelPathForm
+    {
+        public string Folder { get; set; } = "";
+        public string Target { get; set; } = "llamasharp";
+    }
 }
